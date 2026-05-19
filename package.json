@@ -1,0 +1,17 @@
+{
+  "name": "tecxbot",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "line:set-webhook": "node scripts/line-set-webhook.mjs",
+    "line:set-rich-menu": "node scripts/line-set-rich-menu.mjs",
+    "dev": "vercel dev"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@vercel/node": "^5.7.12",
+    "typescript": "~5.9.3"
+  }
+}
