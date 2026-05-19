@@ -1,5 +1,3 @@
-import 'dotenv/config';
-
 const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
 const webhookUrl = process.env.LINE_WEBHOOK_URL;
 if (!token) throw new Error('LINE_CHANNEL_ACCESS_TOKEN is required');

@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import { readFile } from 'node:fs/promises';
 import { extname } from 'node:path';
 

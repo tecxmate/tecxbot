@@ -30,12 +30,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 function verifyLineSignature(rawBody: string, signature: string, secret: string) {
   const expected = createHmac('sha256', secret).update(rawBody).digest();
   const actual = Buffer.from(signature, 'base64');
-  return expected.length === actual.length && timingSafeEqual(expected, actual);
+  return expected.length === actual.length && timingSafeEqual(new Uint8Array(expected), new Uint8Array(actual));
 }
 
 async function readRawBody(req: VercelRequest) {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk);
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of req) chunks.push(typeof chunk === 'string' ? new TextEncoder().encode(chunk) : new Uint8Array(chunk));
   return Buffer.concat(chunks).toString('utf8');
 }
 

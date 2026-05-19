@@ -26,8 +26,9 @@ async function handleLineEvent(event: LineEvent): Promise<BotReply | undefined> 
   const tenant = getTenantConfig();
   const source = event.source;
   const session = getSession({ tenantId: tenant.id, platform: 'line', sourceType: source?.type ?? 'user', sourceId: source?.groupId ?? source?.roomId ?? source?.userId ?? 'unknown', userId: source?.userId });
-  if (event.type === 'postback') return handlePostback(event.postback?.data ?? '', session, tenant);
+  if (event.type === 'postback' && 'postback' in event) return handlePostback(event.postback?.data ?? '', session, tenant);
   if (event.type !== 'message') return undefined;
+  if (!('message' in event)) return undefined;
   return handleMessage(event.message, source, session, tenant);
 }
 
