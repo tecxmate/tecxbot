@@ -12,13 +12,17 @@ const grid: Rgba = [226, 232, 240, 255];
 const axis: Rgba = [148, 163, 184, 255];
 const line: Rgba = [14, 116, 144, 255];
 const dot: Rgba = [8, 145, 178, 255];
+const text: Rgba = [15, 23, 42, 255];
+const mutedText: Rgba = [100, 116, 139, 255];
 
-export function renderPriceLinePng(input: { points: PricePoint[]; width?: number; height?: number }) {
+export function renderPriceLinePng(input: { points: PricePoint[]; width?: number; height?: number; title?: string; subtitle?: string }) {
   const width = input.width ?? 1200;
   const height = input.height ?? 630;
-  const margin = { left: 70, right: 50, top: 50, bottom: 70 };
+  const margin = { left: 86, right: 120, top: 110, bottom: 92 };
   const canvas = new Uint8ClampedArray(width * height * 4);
   fill(canvas, width, height, white);
+  drawText(canvas, width, height, input.title ?? 'PRICE CHART', 70, 34, 5, text);
+  if (input.subtitle) drawText(canvas, width, height, input.subtitle, 72, 78, 3, mutedText);
 
   const points: Array<{ date?: string; close: number }> = [];
   for (const point of input.points) {
@@ -28,7 +32,10 @@ export function renderPriceLinePng(input: { points: PricePoint[]; width?: number
   }
 
   drawGrid(canvas, width, height, margin);
-  if (points.length < 2) return encodePng(width, height, canvas);
+  if (points.length < 2) {
+    drawText(canvas, width, height, 'NO CHART DATA', margin.left + 18, margin.top + 40, 4, mutedText);
+    return encodePng(width, height, canvas);
+  }
 
   const closes = points.map((point) => point.close);
   const min = Math.min(...closes);
@@ -43,6 +50,16 @@ export function renderPriceLinePng(input: { points: PricePoint[]; width?: number
     const y = margin.top + (1 - (point.close - yMin) / Math.max(1, yMax - yMin)) * chartH;
     return { x, y };
   });
+  const latest = points.at(-1);
+  const first = points[0];
+  const mid = (yMin + yMax) / 2;
+
+  drawText(canvas, width, height, `HIGH ${formatNumber(yMax)}`, width - 108, margin.top - 3, 2, mutedText);
+  drawText(canvas, width, height, formatNumber(mid), width - 108, margin.top + chartH / 2 - 7, 2, mutedText);
+  drawText(canvas, width, height, `LOW ${formatNumber(yMin)}`, width - 108, margin.top + chartH - 13, 2, mutedText);
+  if (first?.date) drawText(canvas, width, height, shortDate(first.date), margin.left, margin.top + chartH + 28, 3, mutedText);
+  if (latest?.date) drawText(canvas, width, height, shortDate(latest.date), margin.left + chartW - 118, margin.top + chartH + 28, 3, mutedText);
+  if (latest) drawText(canvas, width, height, `LAST ${formatNumber(latest.close)}`, width - 310, 45, 4, line);
 
   for (let index = 1; index < coords.length; index += 1) {
     drawLine(canvas, width, height, coords[index - 1].x, coords[index - 1].y, coords[index].x, coords[index].y, line, 5);
@@ -103,6 +120,83 @@ function setPixel(canvas: Uint8ClampedArray, width: number, height: number, x: n
   canvas[offset + 2] = color[2];
   canvas[offset + 3] = color[3];
 }
+
+function drawText(canvas: Uint8ClampedArray, width: number, height: number, value: string, x: number, y: number, scale: number, color: Rgba) {
+  let cursor = x;
+  const normalized = value.toUpperCase().slice(0, 42);
+  for (const char of normalized) {
+    const glyph = font[char] ?? font['?'];
+    for (let row = 0; row < glyph.length; row += 1) {
+      for (let col = 0; col < glyph[row].length; col += 1) {
+        if (glyph[row][col] !== '1') continue;
+        fillRect(canvas, width, height, cursor + col * scale, y + row * scale, scale, scale, color);
+      }
+    }
+    cursor += (glyph[0].length + 1) * scale;
+  }
+}
+
+function fillRect(canvas: Uint8ClampedArray, width: number, height: number, x: number, y: number, rectWidth: number, rectHeight: number, color: Rgba) {
+  for (let py = 0; py < rectHeight; py += 1) {
+    for (let px = 0; px < rectWidth; px += 1) setPixel(canvas, width, height, x + px, y + py, color);
+  }
+}
+
+function formatNumber(value: number) {
+  if (Math.abs(value) >= 1000) return value.toFixed(0);
+  if (Math.abs(value) >= 100) return value.toFixed(1);
+  return value.toFixed(2);
+}
+
+function shortDate(value: string) {
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  return match ? `${match[2]}/${match[3]}` : value.slice(0, 8);
+}
+
+const font: Record<string, string[]> = {
+  ' ': ['000', '000', '000', '000', '000', '000', '000'],
+  '?': ['11110', '00001', '00001', '00110', '00100', '00000', '00100'],
+  '-': ['00000', '00000', '00000', '11111', '00000', '00000', '00000'],
+  '.': ['000', '000', '000', '000', '000', '110', '110'],
+  '/': ['00001', '00010', '00010', '00100', '01000', '01000', '10000'],
+  ':': ['000', '110', '110', '000', '110', '110', '000'],
+  '0': ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
+  '1': ['00100', '01100', '00100', '00100', '00100', '00100', '01110'],
+  '2': ['01110', '10001', '00001', '00010', '00100', '01000', '11111'],
+  '3': ['11110', '00001', '00001', '01110', '00001', '00001', '11110'],
+  '4': ['00010', '00110', '01010', '10010', '11111', '00010', '00010'],
+  '5': ['11111', '10000', '10000', '11110', '00001', '00001', '11110'],
+  '6': ['01110', '10000', '10000', '11110', '10001', '10001', '01110'],
+  '7': ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
+  '8': ['01110', '10001', '10001', '01110', '10001', '10001', '01110'],
+  '9': ['01110', '10001', '10001', '01111', '00001', '00001', '01110'],
+  'A': ['01110', '10001', '10001', '11111', '10001', '10001', '10001'],
+  'B': ['11110', '10001', '10001', '11110', '10001', '10001', '11110'],
+  'C': ['01110', '10001', '10000', '10000', '10000', '10001', '01110'],
+  'D': ['11110', '10001', '10001', '10001', '10001', '10001', '11110'],
+  'E': ['11111', '10000', '10000', '11110', '10000', '10000', '11111'],
+  'F': ['11111', '10000', '10000', '11110', '10000', '10000', '10000'],
+  'G': ['01110', '10001', '10000', '10111', '10001', '10001', '01110'],
+  'H': ['10001', '10001', '10001', '11111', '10001', '10001', '10001'],
+  'I': ['01110', '00100', '00100', '00100', '00100', '00100', '01110'],
+  'J': ['00111', '00010', '00010', '00010', '00010', '10010', '01100'],
+  'K': ['10001', '10010', '10100', '11000', '10100', '10010', '10001'],
+  'L': ['10000', '10000', '10000', '10000', '10000', '10000', '11111'],
+  'M': ['10001', '11011', '10101', '10101', '10001', '10001', '10001'],
+  'N': ['10001', '11001', '10101', '10011', '10001', '10001', '10001'],
+  'O': ['01110', '10001', '10001', '10001', '10001', '10001', '01110'],
+  'P': ['11110', '10001', '10001', '11110', '10000', '10000', '10000'],
+  'Q': ['01110', '10001', '10001', '10001', '10101', '10010', '01101'],
+  'R': ['11110', '10001', '10001', '11110', '10100', '10010', '10001'],
+  'S': ['01111', '10000', '10000', '01110', '00001', '00001', '11110'],
+  'T': ['11111', '00100', '00100', '00100', '00100', '00100', '00100'],
+  'U': ['10001', '10001', '10001', '10001', '10001', '10001', '01110'],
+  'V': ['10001', '10001', '10001', '10001', '10001', '01010', '00100'],
+  'W': ['10001', '10001', '10001', '10101', '10101', '10101', '01010'],
+  'X': ['10001', '10001', '01010', '00100', '01010', '10001', '10001'],
+  'Y': ['10001', '10001', '01010', '00100', '00100', '00100', '00100'],
+  'Z': ['11111', '00001', '00010', '00100', '01000', '10000', '11111'],
+};
 
 function encodePng(width: number, height: number, rgba: Uint8ClampedArray) {
   const raw = new Uint8Array((width * 4 + 1) * height);

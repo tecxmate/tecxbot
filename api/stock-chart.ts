@@ -20,9 +20,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     const result = await callMcpTool(botSystem, 'price_history', { ticker_id: ticker, days });
     const prices = extractPrices(result.result);
-    const png = renderPriceLinePng({ points: prices });
+    const png = renderPriceLinePng({
+      points: prices,
+      title: `${ticker} CLOSE PRICE`,
+      subtitle: `${days} TRADING DAYS`,
+    });
     res.setHeader('Content-Type', 'image/png');
-    res.setHeader('Cache-Control', 'public, max-age=300, s-maxage=300');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.setHeader('CDN-Cache-Control', 'public, max-age=3600');
+    res.setHeader('Vercel-CDN-Cache-Control', 'public, s-maxage=3600, stale-while-revalidate=86400');
     return res.status(200).send(Buffer.from(png));
   } catch (error) {
     console.error('[stock-chart] Failed:', error);

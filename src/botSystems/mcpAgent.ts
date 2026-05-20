@@ -127,7 +127,7 @@ async function executeMcpAgentCommand(command: McpAgentCommand, source: LineSour
     if (command.name === 'brief') return runWatchlistBrief(config, command.args, source, runtime);
     if (command.name === 'status') return runSingleTool(config, 'sc_data_status', {}, formatDataStatus, source);
     if (command.name === 'whoami') return whoamiReply(source);
-    if (command.name === 'q') return runTickerSnapshot(config, command.args, source);
+    if (command.name === 'q') return runTickerSnapshot(config, command.args, source, runtime);
     if (command.name === 'chart') return runChartCommand(command.args, source, runtime);
     if (command.name === 'flow') return runFlow(config, command.args, source);
     if (command.name === 'map') return runMap(config, command.args, source);
@@ -152,12 +152,13 @@ async function executeMcpAgentCommand(command: McpAgentCommand, source: LineSour
   return mcpHelpReply(source);
 }
 
-async function runTickerSnapshot(config: Extract<TenantConfig['botSystem'], { kind: 'mcp_agent' }>, args: string[], source: LineSource | undefined): Promise<BotReply> {
+async function runTickerSnapshot(config: Extract<TenantConfig['botSystem'], { kind: 'mcp_agent' }>, args: string[], source: LineSource | undefined, runtime: LineWebhookRuntime): Promise<BotReply> {
   const ticker = parseTicker(args[0]);
   if (!ticker) return usageReply('/q <ticker>\nExample: /q 2330', source);
+  const imageUrl = stockChartUrl({ ticker, days: 90, tenantId: runtime.tenant.id, channelId: runtime.channel.id });
   try {
     const card = await callMcpTool(config, 'beginner_stock_card', { ticker_id: ticker });
-    return { text: formatBeginnerStockCard(card.result), buttons: tickerReportButtons(source, ticker) };
+    return { imageUrl, text: formatBeginnerStockCard(card.result), buttons: tickerReportButtons(source, ticker) };
   } catch (error) {
     console.warn('[mcp-agent] beginner_stock_card failed, falling back:', error);
   }
@@ -166,7 +167,7 @@ async function runTickerSnapshot(config: Extract<TenantConfig['botSystem'], { ki
     ['q_valuation', { ticker_id: ticker }],
     ['sc_ticker_momentum', { ticker_id: ticker, window: parseWindow(args[1]), top_n: 1 }],
   ]);
-  return { text: formatTickerReport(ticker, calls), buttons: tickerReportButtons(source, ticker) };
+  return { imageUrl, text: formatTickerReport(ticker, calls), buttons: tickerReportButtons(source, ticker) };
 }
 
 async function runChartCommand(args: string[], source: LineSource | undefined, runtime: LineWebhookRuntime): Promise<BotReply> {
