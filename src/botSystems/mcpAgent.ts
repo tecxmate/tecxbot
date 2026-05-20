@@ -1,7 +1,7 @@
 import { callMcpTool, type McpToolCallResult } from '../core/mcpClient.js';
 import { addPersonalWatchItem, getPersonalProfile, removeBriefReminder, removePersonalWatchItem, setBriefReminderEnabled, setPersonalPreferences, upsertBriefReminder, type PersonalLanguage, type PersonalProfile, type PersonalRisk, type PersonalTone, type WatchlistBriefTemplate } from '../core/personalProfileStore.js';
 import type { BotReply, TenantConfig } from '../core/types.js';
-import type { LineEvent, LineSource } from '../platforms/line/types.js';
+import type { LineEvent, LineMentionee, LineMessage, LineSource } from '../platforms/line/types.js';
 import type { LineWebhookRuntime } from '../platforms/line/webhook.js';
 import { buildWatchlistBrief } from './mcpBrief.js';
 
@@ -82,16 +82,14 @@ const tickerAliases = new Map<string, string>([
 
 export async function handleMcpAgentLineEvent(event: LineEvent, runtime: LineWebhookRuntime): Promise<BotReply | undefined> {
   const source = event.source;
-  if (source?.type === 'group' || source?.type === 'room') {
-    if (event.type === 'join') return groupDisabledReply();
-    if (event.type === 'message' && 'message' in event && event.message.type === 'text' && event.message.text.trim().startsWith('/')) return groupDisabledReply();
-    return undefined;
-  }
   if (event.type === 'follow' || event.type === 'join') return mcpWelcomeReply(source, runtime.tenant);
   if (event.type === 'postback' && 'postback' in event) return handleMcpPostback(event.postback?.data ?? '', source, runtime);
   if (event.type !== 'message' || !('message' in event) || event.message.type !== 'text') return undefined;
 
-  const text = event.message.text.trim();
+  const mention = normalizeMcpMention(event.message, source, runtime.tenant.botMentionNames);
+  if (!mention.shouldReply) return undefined;
+  const text = mention.text.trim();
+  if (!text) return mcpHelpReply(source);
   const command = parseMcpAgentCommand(text);
   if (!command) {
     if (/^(help|menu|start|開始|說明)$/i.test(text)) return mcpHelpReply(source);
@@ -591,16 +589,15 @@ function parseMcpAgentCommand(text: string): McpAgentCommand | undefined {
 }
 
 function mcpWelcomeReply(source: LineSource | undefined, tenant: TenantConfig): BotReply {
+  if (isGroupLike(source)) {
+    return {
+      text: `${tenant.name} stock bot is connected.\n\nIn this group, mention me when you want a reply:\n@Tecxbot /q 2330\n@Tecxbot /chart 2330\n@Tecxbot /help\n\nAction chips are disabled in groups so I do not clutter the chat.`,
+      buttons: [],
+    };
+  }
   return {
-    text: `${tenant.name} stock bot is connected.\n\nTecxstock works in 1:1 chat only. Use /help for commands, /watchlist for your personal list, and /reminder to schedule watchlist briefs.`,
+    text: `${tenant.name} stock bot is connected.\n\nUse /help for commands, /watchlist for your personal list, and /reminder to schedule watchlist briefs.`,
     buttons: buttonsFor(source),
-  };
-}
-
-function groupDisabledReply(): BotReply {
-  return {
-    text: 'Tecxstock is available in 1:1 chat only.\n\nPlease add this account as a friend and use commands there, such as /q 2330, /watchlist, or /reminder.',
-    buttons: [],
   };
 }
 
@@ -608,7 +605,7 @@ function mcpHelpReply(source: LineSource | undefined): BotReply {
   return {
     text: joinLines([
       'Tecxstock',
-      '1:1 Taiwan stock intelligence for your watchlist.',
+      isGroupLike(source) ? 'Mention me with a command in this group.' : '1:1 Taiwan stock intelligence for your watchlist.',
       '',
       'Most used',
       '/q 2330 - stock report',
@@ -804,7 +801,7 @@ function suggestActions(text: string): SuggestedAction[] {
 }
 
 function buttonsFromSuggestions(source: LineSource | undefined, suggestions: SuggestedAction[]): BotReply['buttons'] {
-  if (source?.type === 'group') return [];
+  if (isGroupLike(source)) return [];
   const rows: BotReply['buttons'] = [];
   for (let index = 0; index < suggestions.length; index += 2) {
     rows.push(suggestions.slice(index, index + 2).map((suggestion) => ({
@@ -816,7 +813,7 @@ function buttonsFromSuggestions(source: LineSource | undefined, suggestions: Sug
 }
 
 function helpButtons(source: LineSource | undefined): BotReply['buttons'] {
-  if (source?.type === 'group') return [];
+  if (isGroupLike(source)) return [];
   return [
     [{ label: 'Reports', text: '/help reports' }, { label: 'Watchlist', text: '/help watchlist' }],
     [{ label: 'Settings', text: '/help settings' }, { label: 'Advanced', text: '/help advanced' }],
@@ -826,7 +823,7 @@ function helpButtons(source: LineSource | undefined): BotReply['buttons'] {
 }
 
 function reportButtons(source: LineSource | undefined): BotReply['buttons'] {
-  if (source?.type === 'group') return [];
+  if (isGroupLike(source)) return [];
   return [
     [{ label: 'Chart', text: '/chart 2330' }, { label: 'Stock report', text: '/q 2330' }],
     [{ label: 'Flow', text: '/flow 2330 5d' }, { label: 'News', text: '/n 2330 7' }],
@@ -836,7 +833,7 @@ function reportButtons(source: LineSource | undefined): BotReply['buttons'] {
 }
 
 function watchlistButtons(source: LineSource | undefined): BotReply['buttons'] {
-  if (source?.type === 'group') return [];
+  if (isGroupLike(source)) return [];
   return [
     [{ label: 'Watchlist', text: '/watchlist' }, { label: 'Add 2330', text: '/watch 2330' }],
     [{ label: 'Brief now', text: '/brief premarket' }, { label: 'Set 8:30', text: '/reminder add 08:30 premarket' }],
@@ -845,7 +842,7 @@ function watchlistButtons(source: LineSource | undefined): BotReply['buttons'] {
 }
 
 function settingsButtons(source: LineSource | undefined): BotReply['buttons'] {
-  if (source?.type === 'group') return [];
+  if (isGroupLike(source)) return [];
   return [
     [{ label: 'Profile', text: '/profile' }, { label: 'Concise', text: '/pref tone concise' }],
     [{ label: 'TW', text: '/pref lang tw' }, { label: 'Conservative', text: '/pref risk conservative' }],
@@ -854,7 +851,7 @@ function settingsButtons(source: LineSource | undefined): BotReply['buttons'] {
 }
 
 function advancedButtons(source: LineSource | undefined): BotReply['buttons'] {
-  if (source?.type === 'group') return [];
+  if (isGroupLike(source)) return [];
   return [
     [{ label: 'Backtest', text: '/backtest rsi_14 40 below 5' }, { label: 'Alpha', text: '/alpha 2330' }],
     [{ label: 'Factor', text: '/factor semiconductor' }, { label: 'Lead lag', text: '/leadlag 2330' }],
@@ -863,7 +860,7 @@ function advancedButtons(source: LineSource | undefined): BotReply['buttons'] {
 }
 
 function tickerReportButtons(source: LineSource | undefined, ticker: string): BotReply['buttons'] {
-  if (source?.type === 'group') return [];
+  if (isGroupLike(source)) return [];
   return [
     [{ label: 'Chart', text: `/chart ${ticker}` }, { label: 'News', text: `/n ${ticker} 7` }],
     [{ label: 'Flow', text: `/flow ${ticker} 5d` }, { label: 'Watch', text: `/watch ${ticker}` }],
@@ -872,7 +869,7 @@ function tickerReportButtons(source: LineSource | undefined, ticker: string): Bo
 }
 
 function buttonsFor(source: LineSource | undefined): BotReply['buttons'] {
-  if (source?.type === 'group') return [];
+  if (isGroupLike(source)) return [];
   return [
     [{ label: 'Chart', text: '/chart 2330' }, { label: 'Stock report', text: '/q 2330' }],
     [{ label: 'Watchlist', text: '/watchlist' }, { label: 'Brief', text: '/brief premarket' }],
@@ -1057,7 +1054,7 @@ function reminderUsageReply(source: LineSource | undefined): BotReply {
 }
 
 function reminderButtons(source: LineSource | undefined): BotReply['buttons'] {
-  if (source?.type === 'group') return [];
+  if (isGroupLike(source)) return [];
   return [
     [{ label: '8:30 premarket', text: '/reminder add 08:30 premarket' }, { label: '12:30 midday', text: '/reminder add 12:30 midday' }],
     [{ label: '16:30 close', text: '/reminder add 16:30 postclose' }, { label: '21:00 risk', text: '/reminder add 21:00 risk' }],
@@ -1152,6 +1149,45 @@ function riskLabel(risk: PersonalRisk, language: PersonalLanguage) {
   if (risk === 'conservative') return '保守';
   if (risk === 'aggressive') return '積極';
   return '平衡';
+}
+
+function normalizeMcpMention(message: Extract<LineMessage, { type: 'text' }>, source: LineSource | undefined, names: string[]) {
+  const trimmed = message.text.trim();
+  if (!isGroupLike(source)) return { shouldReply: true, text: trimmed };
+
+  const strippedByMetadata = stripSelfMentions(message.text, message.mention?.mentionees);
+  if (strippedByMetadata !== undefined) return { shouldReply: true, text: strippedByMetadata.trim() };
+
+  const escapedNames = names.map((name) => name.trim()).filter(Boolean).map(escapeRegExp);
+  if (!escapedNames.length) return { shouldReply: false, text: trimmed };
+  const mentionPattern = new RegExp(`(^|\\s)@(?:${escapedNames.join('|')})(?=$|\\s|[,:;，：])`, 'i');
+  if (!mentionPattern.test(message.text)) return { shouldReply: false, text: trimmed };
+
+  const mentionReplacePattern = new RegExp(`(^|\\s)@(?:${escapedNames.join('|')})(?=$|\\s|[,:;，：])`, 'ig');
+  return {
+    shouldReply: true,
+    text: message.text.replace(mentionReplacePattern, ' ').replace(/\s+/g, ' ').trim(),
+  };
+}
+
+function stripSelfMentions(text: string, mentionees: LineMentionee[] | undefined) {
+  const selfMentions = Array.isArray(mentionees)
+    ? mentionees.filter((mention) => mention.isSelf === true && Number.isInteger(mention.index) && Number.isInteger(mention.length))
+    : [];
+  if (!selfMentions.length) return undefined;
+  let output = text;
+  for (const mention of [...selfMentions].sort((a, b) => b.index - a.index)) {
+    output = `${output.slice(0, mention.index)} ${output.slice(mention.index + mention.length)}`;
+  }
+  return output.replace(/\s+/g, ' ').trim();
+}
+
+function isGroupLike(source: LineSource | undefined) {
+  return source?.type === 'group' || source?.type === 'room';
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function extractTicker(text: string) {

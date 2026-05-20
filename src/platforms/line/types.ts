@@ -1,9 +1,17 @@
 export type LineSource = { userId?: string; type: 'user' | 'group' | 'room'; groupId?: string; roomId?: string };
 
 export type LineMessage =
-  | { type: 'text'; id: string; text: string }
+  | { type: 'text'; id: string; text: string; mention?: { mentionees?: LineMentionee[] } }
   | { type: 'audio' | 'video' | 'file'; id: string; duration?: number; fileName?: string; fileSize?: number }
   | { type: 'image' | 'location' | 'sticker' | 'unknown'; id: string };
+
+export type LineMentionee = {
+  index: number;
+  length: number;
+  type?: string;
+  userId?: string;
+  isSelf?: boolean;
+};
 
 export type LineEvent =
   | { type: 'message'; replyToken: string; source?: LineSource; message: LineMessage }
