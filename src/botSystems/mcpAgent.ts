@@ -93,11 +93,12 @@ export async function handleMcpAgentLineEvent(event: LineEvent, runtime: LineWeb
   const command = parseMcpAgentCommand(text);
   if (!command) {
     if (/^(help|menu|start|開始|說明)$/i.test(text)) return mcpHelpReply(source);
-    const ticker = extractTicker(text);
-    if (ticker) {
-      const reply = await executeMcpAgentCommand({ name: 'q', args: [ticker] }, source, runtime);
+    const ticker = await resolveTickerFromText(runtime, text);
+    if (ticker.match) {
+      const reply = await executeMcpAgentCommand({ name: 'q', args: [ticker.match] }, source, runtime);
       return decorateReplyForProfile(reply, source, runtime, 'q');
     }
+    if (ticker.choices?.length) return tickerLookupChoicesReply(text, ticker.choices, source);
     return deterministicGuidanceReply(text, source);
   }
   const reply = await executeMcpAgentCommand(command, source, runtime);
@@ -1157,6 +1158,64 @@ function riskLabel(risk: PersonalRisk, language: PersonalLanguage) {
   return '平衡';
 }
 
+async function resolveTickerFromText(runtime: LineWebhookRuntime, text: string): Promise<{ match?: string; choices?: Array<Record<string, unknown>> }> {
+  const direct = extractTickerCode(text);
+  if (direct) return { match: direct };
+
+  const config = runtime.channel.botSystem.kind === 'mcp_agent' ? runtime.channel.botSystem : undefined;
+  const query = normalizeTickerLookupQuery(text);
+  if (config && query) {
+    try {
+      const result = await callMcpTool(config, 'ticker_lookup', { query, limit: 5 });
+      const rows = tickerLookupRows(result.result);
+      const exact = rows.find((row) => isExactTickerLookupMatch(row, query));
+      if (exact) return { match: stringValue(exact.ticker_id)?.toUpperCase() };
+      if (rows.length === 1) return { match: stringValue(rows[0].ticker_id)?.toUpperCase() };
+      if (rows.length > 1) return { choices: rows };
+    } catch (error) {
+      console.warn('[mcp-agent] ticker_lookup failed, falling back to local aliases:', error);
+    }
+  }
+
+  return { match: extractTickerAlias(text) };
+}
+
+function tickerLookupChoicesReply(query: string, choices: Array<Record<string, unknown>>, source: LineSource | undefined): BotReply {
+  const suggestions = choices.slice(0, 5).map((row) => {
+    const ticker = stringValue(row.ticker_id)?.toUpperCase() ?? '';
+    const name = stringValue(row.company_name ?? row.name) ?? '';
+    return { ticker, name };
+  }).filter((row) => row.ticker);
+
+  return {
+    text: joinLines([
+      `Found multiple matches for "${query.trim()}".`,
+      ...suggestions.map((row) => `${row.ticker}${row.name ? ` ${row.name}` : ''} - send ${row.ticker} or /q ${row.ticker}`),
+    ]),
+    buttons: buttonsFromSuggestions(source, suggestions.slice(0, 4).map((row) => ({ label: row.ticker, command: `/q ${row.ticker}` }))),
+  };
+}
+
+function tickerLookupRows(result: unknown) {
+  return objectArray(result, ['matches', 'rows', 'tickers', 'companies'])
+    .filter((row) => stringValue(row.ticker_id));
+}
+
+function isExactTickerLookupMatch(row: Record<string, unknown>, query: string) {
+  const normalized = query.trim().toLowerCase();
+  return stringValue(row.ticker_id)?.toLowerCase() === normalized
+    || stringValue(row.company_name ?? row.name)?.toLowerCase() === normalized;
+}
+
+function normalizeTickerLookupQuery(text: string) {
+  return text
+    .trim()
+    .replace(/^查(一下)?/, '')
+    .replace(/^(看|看看|幫我看|幫我查|股票)/, '')
+    .replace(/(股票|股價|走勢|報告|資料)$/g, '')
+    .trim();
+}
+
 function normalizeMcpMention(message: Extract<LineMessage, { type: 'text' }>, source: LineSource | undefined, names: string[]) {
   const trimmed = message.text.trim();
   if (!isGroupLike(source)) return { shouldReply: true, text: trimmed };
@@ -1197,10 +1256,18 @@ function escapeRegExp(value: string) {
 }
 
 function extractTicker(text: string) {
+  return extractTickerCode(text) ?? extractTickerAlias(text);
+}
+
+function extractTickerAlias(text: string) {
   const normalized = text.toLowerCase();
   for (const [alias, ticker] of tickerAliases) {
     if (normalized.includes(alias)) return ticker;
   }
+  return undefined;
+}
+
+function extractTickerCode(text: string) {
   const tickerLike = text.match(/(?:^|[^0-9A-Za-z])([0-9]{4}[A-Za-z]?|00[0-9]{2,3}[A-Za-z]?)(?=$|[^0-9A-Za-z])/);
   return parseTicker(tickerLike?.[1]);
 }
