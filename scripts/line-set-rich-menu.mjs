@@ -6,7 +6,7 @@ const imagePath = process.env.LINE_RICH_MENU_IMAGE_PATH ?? process.argv[2];
 if (!token) throw new Error('LINE_CHANNEL_ACCESS_TOKEN is required');
 if (!imagePath) throw new Error('LINE_RICH_MENU_IMAGE_PATH is required, or pass image path as first argument');
 
-const richMenu = { size: { width: 2500, height: 843 }, selected: true, name: 'Tecxbot main menu', chatBarText: 'Tecxbot', areas: [area(0, '今日任務', 'menu:brief'), area(625, '搜尋資料', 'menu:search'), area(1250, '上傳/轉文字', 'menu:audio'), area(1875, 'AI 助理', 'menu:ai')] };
+const richMenu = { size: { width: 2500, height: 843 }, selected: true, name: 'Tecxbot main menu', chatBarText: 'Tecxbot', areas: [area(0, 'Help', 'menu:help'), area(625, 'Settings', 'menu:settings'), area(1250, 'Status', 'settings:usage'), area(1875, 'Languages', 'settings:languages')] };
 const created = await callJson('https://api.line.me/v2/bot/richmenu', richMenu, 'POST');
 const richMenuId = created.richMenuId;
 if (!richMenuId) throw new Error(`LINE did not return richMenuId: ${JSON.stringify(created)}`);

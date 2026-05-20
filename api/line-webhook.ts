@@ -1,13 +1,18 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { handleLineWebhook, type LineWebhookPayload } from '../src/platforms/line/webhook.js';
+import { resolveTenantChannel } from '../src/core/tenantStore.js';
 
 export const config = { api: { bodyParser: false }, maxDuration: 60 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
   const rawBody = await readRawBody(req);
-  const channelSecret = process.env.LINE_CHANNEL_SECRET;
+  const runtime = resolveTenantChannel({
+    tenantId: firstQueryValue(req.query.tenant),
+    channelId: firstQueryValue(req.query.channel),
+  });
+  const channelSecret = runtime.channel.line?.channelSecret;
   const signature = req.headers['x-line-signature'];
   if (channelSecret) {
     if (!signature || Array.isArray(signature) || !verifyLineSignature(rawBody, signature, channelSecret)) return res.status(401).json({ error: 'Invalid LINE signature' });
@@ -19,7 +24,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(400).json({ error: 'Invalid JSON payload' });
   }
   try {
-    const processed = await handleLineWebhook(payload);
+    const processed = await handleLineWebhook(payload, runtime);
     return res.status(200).json({ ok: true, processed });
   } catch (error) {
     console.error('[line-webhook] Failed:', error);
@@ -41,4 +46,8 @@ async function readRawBody(req: VercelRequest) {
 
 function formatError(error: unknown) {
   return error instanceof Error ? error.message : String(error);
+}
+
+function firstQueryValue(value: string | string[] | undefined) {
+  return Array.isArray(value) ? value[0] : value;
 }

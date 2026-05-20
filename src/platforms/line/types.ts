@@ -8,6 +8,7 @@ export type LineMessage =
 export type LineEvent =
   | { type: 'message'; replyToken: string; source?: LineSource; message: LineMessage }
   | { type: 'postback'; replyToken: string; source?: LineSource; postback?: { data?: string } }
+  | { type: 'follow' | 'join' | 'memberJoined'; replyToken: string; source?: LineSource }
   | { type: string; replyToken?: string; source?: LineSource };
 
 export type LineWebhookPayload = { events?: LineEvent[] };

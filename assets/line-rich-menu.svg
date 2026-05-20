@@ -6,9 +6,9 @@
   <rect x="1875" y="0" width="625" height="843" fill="#3d37a8"/>
   <path d="M625 0v843M1250 0v843M1875 0v843" stroke="#f8f8f2" stroke-width="10"/>
   <g font-family="PingFang TC, Noto Sans TC, Helvetica, Arial, sans-serif" text-anchor="middle" fill="#fff">
-    <text x="312.5" y="284" font-size="72" font-weight="800">今日</text><text x="312.5" y="374" font-size="72" font-weight="800">任務</text><text x="312.5" y="466" font-size="30" opacity="0.88">Brief</text>
-    <text x="937.5" y="284" font-size="72" font-weight="800">搜尋</text><text x="937.5" y="374" font-size="72" font-weight="800">資料</text><text x="937.5" y="466" font-size="30" opacity="0.88">Search</text>
-    <text x="1562.5" y="284" font-size="72" font-weight="800">上傳</text><text x="1562.5" y="374" font-size="72" font-weight="800">轉文字</text><text x="1562.5" y="466" font-size="30" opacity="0.88">Audio</text>
-    <text x="2187.5" y="284" font-size="72" font-weight="800">AI</text><text x="2187.5" y="374" font-size="72" font-weight="800">助理</text><text x="2187.5" y="466" font-size="30" opacity="0.88">Ask</text>
+    <text x="312.5" y="312" font-size="72" font-weight="800">Help</text><text x="312.5" y="406" font-size="30" opacity="0.88">/help</text>
+    <text x="937.5" y="312" font-size="72" font-weight="800">Settings</text><text x="937.5" y="406" font-size="30" opacity="0.88">/settings</text>
+    <text x="1562.5" y="312" font-size="72" font-weight="800">Status</text><text x="1562.5" y="406" font-size="30" opacity="0.88">/status</text>
+    <text x="2187.5" y="312" font-size="72" font-weight="800">Languages</text><text x="2187.5" y="406" font-size="30" opacity="0.88">/languages</text>
   </g>
 </svg>
