@@ -346,24 +346,30 @@ function formatBeginnerStockCard(result: unknown) {
   const chartPoints = Array.isArray(chart?.points) ? chart.points.filter(isRecord) : [];
   return joinSections([
     `Stock report: ${[stringValue(card.ticker_id), stringValue(card.company_name)].filter(Boolean).join(' ')}${stringValue(card.as_of) ? `\nAs of ${stringValue(card.as_of)}` : ''}`,
-    joinLines([
-      'Price',
-      `Close ${fmt(price?.close)} | day change ${fmtPct(price?.change_pct)}`,
-      `Chart points available: ${chartPoints.length}`,
+    metricBlock('Price', [
+      ['Close', fmtNumber(price?.close)],
+      ['Day change', fmtPct(price?.change_pct)],
+      ['Chart points', String(chartPoints.length)],
     ]),
-    joinLines([
-      'Trend numbers',
-      `RSI ${fmt(trend?.rsi_14)} | MACD hist ${fmt(trend?.macd_histogram)} | BB%B ${fmt(trend?.bb_pct_b)}`,
-      `SMA50 ${fmt(trend?.sma_50)} | SMA200 ${fmt(trend?.sma_200)} | RS 60d ${fmt(trend?.rs_vs_market_60)}`,
+    metricBlock('Trend numbers', [
+      ['RSI', fmtNumber(trend?.rsi_14)],
+      ['MACD hist', fmtNumber(trend?.macd_histogram)],
+      ['BB%B', fmtNumber(trend?.bb_pct_b)],
+      ['SMA50', fmtNumber(trend?.sma_50)],
+      ['SMA200', fmtNumber(trend?.sma_200)],
+      ['RS 60d', fmtNumber(trend?.rs_vs_market_60)],
     ]),
-    joinLines([
-      'Institutional flow',
-      `Foreign 1d ${fmt(flow?.foreign_1d)} | 5d ${fmt(flow?.foreign_5d)} | 20d ${fmt(flow?.foreign_20d)}`,
-      `Foreign z20 ${fmt(flow?.foreign_net_z20)} | buy streak ${fmt(flow?.consecutive_foreign_buy_days)}`,
+    metricBlock('Institutional flow', [
+      ['Foreign 1d', fmtNumber(flow?.foreign_1d)],
+      ['Foreign 5d', fmtNumber(flow?.foreign_5d)],
+      ['Foreign 20d', fmtNumber(flow?.foreign_20d)],
+      ['Foreign z20', fmtNumber(flow?.foreign_net_z20)],
+      ['Buy streak', fmtNumber(flow?.consecutive_foreign_buy_days)],
     ]),
-    joinLines([
-      'Valuation',
-      `PE ${fmt(valuation?.pe_ratio)} | PB ${fmt(valuation?.pb_ratio)} | yield ${fmt(valuation?.dividend_yield)}`,
+    metricBlock('Valuation', [
+      ['PE', fmtNumber(valuation?.pe_ratio)],
+      ['PB', fmtNumber(valuation?.pb_ratio)],
+      ['Yield', fmtPct(valuation?.dividend_yield)],
     ]),
     formatBeginnerLabels(card.beginner_labels),
   ]);
@@ -1374,10 +1380,31 @@ function metricLine(row: Record<string, unknown>, pairs: Array<[string, string]>
   return parts.join(' | ');
 }
 
+function metricBlock(title: string, rows: Array<[string, string]>) {
+  const labelWidth = Math.max(...rows.map(([label]) => label.length), 1);
+  return joinLines([
+    title,
+    ...rows.map(([label, value]) => `${label.padEnd(labelWidth, ' ')}  ${value}`),
+  ]);
+}
+
 function compactSubscores(value: unknown) {
   const record = asRecord(value);
   if (!record) return undefined;
   return Object.entries(record).map(([key, val]) => `${key}: ${fmt(val)}`).join(' | ');
+}
+
+function fmtNumber(value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    if (Number.isInteger(value)) return value.toLocaleString('en-US');
+    return value.toLocaleString('en-US', { maximumFractionDigits: 2, minimumFractionDigits: 2 });
+  }
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return fmtNumber(parsed);
+    return value.trim();
+  }
+  return '-';
 }
 
 function fmt(value: unknown) {
