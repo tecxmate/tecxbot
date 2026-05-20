@@ -93,6 +93,11 @@ export async function handleMcpAgentLineEvent(event: LineEvent, runtime: LineWeb
   const command = parseMcpAgentCommand(text);
   if (!command) {
     if (/^(help|menu|start|開始|說明)$/i.test(text)) return mcpHelpReply(source);
+    const ticker = extractTicker(text);
+    if (ticker) {
+      const reply = await executeMcpAgentCommand({ name: 'q', args: [ticker] }, source, runtime);
+      return decorateReplyForProfile(reply, source, runtime, 'q');
+    }
     return deterministicGuidanceReply(text, source);
   }
   const reply = await executeMcpAgentCommand(command, source, runtime);
@@ -608,6 +613,7 @@ function mcpHelpReply(source: LineSource | undefined): BotReply {
       isGroupLike(source) ? 'Mention me with a command in this group.' : '1:1 Taiwan stock intelligence for your watchlist.',
       '',
       'Most used',
+      '2330 or 台積電 - stock report',
       '/q 2330 - stock report',
       '/chart 2330 - price chart',
       '/watch 2330 reason - add to watchlist',
