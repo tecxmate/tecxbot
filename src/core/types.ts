@@ -54,6 +54,7 @@ export type ReplyButton = {
 export type BotReply = {
   text: string;
   buttons?: ReplyButton[][];
+  imageUrl?: string;
 };
 
 export type TranscriptLanguage = 'en' | 'zh-TW';

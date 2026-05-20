@@ -19,3 +19,4 @@ export type LineQuickReplyAction =
   | { type: 'uri'; label: string; uri: string };
 
 export type LineTextReply = { type: 'text'; text: string; quickReply?: { items: Array<{ type: 'action'; action: LineQuickReplyAction }> } };
+export type LineImageReply = { type: 'image'; originalContentUrl: string; previewImageUrl: string };

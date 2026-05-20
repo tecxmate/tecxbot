@@ -14,6 +14,7 @@ type McpAgentCommandName =
   | 'status'
   | 'whoami'
   | 'q'
+  | 'chart'
   | 'flow'
   | 'map'
   | 'n'
@@ -123,6 +124,7 @@ async function executeMcpAgentCommand(command: McpAgentCommand, source: LineSour
     if (command.name === 'status') return runSingleTool(config, 'sc_data_status', {}, formatDataStatus, source);
     if (command.name === 'whoami') return whoamiReply(source);
     if (command.name === 'q') return runTickerSnapshot(config, command.args, source);
+    if (command.name === 'chart') return runChartCommand(command.args, source, runtime);
     if (command.name === 'flow') return runFlow(config, command.args, source);
     if (command.name === 'map') return runMap(config, command.args, source);
     if (command.name === 'n') return runTickerNews(config, command.args, source);
@@ -161,6 +163,17 @@ async function runTickerSnapshot(config: Extract<TenantConfig['botSystem'], { ki
     ['sc_ticker_momentum', { ticker_id: ticker, window: parseWindow(args[1]), top_n: 1 }],
   ]);
   return { text: formatTickerReport(ticker, calls), buttons: tickerReportButtons(source, ticker) };
+}
+
+async function runChartCommand(args: string[], source: LineSource | undefined, runtime: LineWebhookRuntime): Promise<BotReply> {
+  const ticker = parseTicker(args[0]);
+  if (!ticker) return usageReply('/chart <ticker>\nExample: /chart 2330', source);
+  const days = parseLimit(args[1], 90);
+  return {
+    imageUrl: stockChartUrl({ ticker, days, tenantId: runtime.tenant.id, channelId: runtime.channel.id }),
+    text: `Price chart ${ticker}\n\nClose-price line, ${days} trading days.\nData source: MCP price_history.`,
+    buttons: tickerReportButtons(source, ticker),
+  };
 }
 
 async function runFlow(config: Extract<TenantConfig['botSystem'], { kind: 'mcp_agent' }>, args: string[], source: LineSource | undefined): Promise<BotReply> {
@@ -557,6 +570,7 @@ function parseMcpAgentCommand(text: string): McpAgentCommand | undefined {
   if (name === 'reminder' || name === 'reminders' || name === 'remind') return { name: 'reminder', args };
   if (name === 'brief' || name === 'watchbrief') return { name: 'brief', args };
   if (name === 'q' || name === 'ticker' || name === 'quote') return { name: 'q', args };
+  if (name === 'chart' || name === 'graph') return { name: 'chart', args };
   if (name === 'flow' || name === 'momentum') return { name: 'flow', args };
   if (name === 'map') return { name: 'map', args };
   if (name === 'n' || name === 'news') return { name: 'n', args };
@@ -598,6 +612,7 @@ function mcpHelpReply(source: LineSource | undefined): BotReply {
       '',
       'Most used',
       '/q 2330 - stock report',
+      '/chart 2330 - price chart',
       '/watch 2330 reason - add to watchlist',
       '/watchlist - your saved stocks',
       '/brief premarket - watchlist brief now',
@@ -618,6 +633,7 @@ function reportHelpReply(source: LineSource | undefined): BotReply {
     text: joinLines([
       'Reports',
       '/q 2330 - stock report with trend, flow, valuation',
+      '/chart 2330 - price chart',
       '/flow 2330 5d - institutional flow',
       '/n 2330 7 - ticker news',
       '/brief premarket - watchlist report now',
@@ -733,6 +749,9 @@ function suggestActions(text: string): SuggestedAction[] {
     if (containsAny(normalized, ['news', '新聞', '消息', 'headline'])) {
       suggestions.push({ label: 'News', command: `/n ${ticker} 7` });
       suggestions.push({ label: 'Snapshot', command: `/q ${ticker}` });
+    } else if (containsAny(normalized, ['chart', 'graph', 'price', '走勢', '圖', 'kline', 'k線'])) {
+      suggestions.push({ label: 'Chart', command: `/chart ${ticker}` });
+      suggestions.push({ label: 'Snapshot', command: `/q ${ticker}` });
     } else if (containsAny(normalized, ['flow', 'foreign', 'fini', '買超', '外資', '籌碼', 'momentum'])) {
       suggestions.push({ label: 'Flow', command: `/flow ${ticker} 5d` });
       suggestions.push({ label: 'Snapshot', command: `/q ${ticker}` });
@@ -746,6 +765,7 @@ function suggestActions(text: string): SuggestedAction[] {
       suggestions.push({ label: 'Valuation', command: `/valuation ${ticker}` });
       suggestions.push({ label: 'Snapshot', command: `/q ${ticker}` });
     } else {
+      suggestions.push({ label: 'Chart', command: `/chart ${ticker}` });
       suggestions.push({ label: 'Snapshot', command: `/q ${ticker}` });
       suggestions.push({ label: 'Flow', command: `/flow ${ticker} 5d` });
       suggestions.push({ label: 'News', command: `/n ${ticker} 7` });
@@ -800,16 +820,18 @@ function helpButtons(source: LineSource | undefined): BotReply['buttons'] {
   return [
     [{ label: 'Reports', text: '/help reports' }, { label: 'Watchlist', text: '/help watchlist' }],
     [{ label: 'Settings', text: '/help settings' }, { label: 'Advanced', text: '/help advanced' }],
-    [{ label: 'Stock report', text: '/q 2330' }, { label: 'Brief now', text: '/brief premarket' }],
+    [{ label: 'Chart', text: '/chart 2330' }, { label: 'Stock report', text: '/q 2330' }],
+    [{ label: 'Brief now', text: '/brief premarket' }],
   ];
 }
 
 function reportButtons(source: LineSource | undefined): BotReply['buttons'] {
   if (source?.type === 'group') return [];
   return [
-    [{ label: 'Stock report', text: '/q 2330' }, { label: 'Flow', text: '/flow 2330 5d' }],
-    [{ label: 'News', text: '/n 2330 7' }, { label: 'Screen', text: '/screen foreign' }],
-    [{ label: 'Regime', text: '/regime' }, { label: 'Back', text: '/help' }],
+    [{ label: 'Chart', text: '/chart 2330' }, { label: 'Stock report', text: '/q 2330' }],
+    [{ label: 'Flow', text: '/flow 2330 5d' }, { label: 'News', text: '/n 2330 7' }],
+    [{ label: 'Screen', text: '/screen foreign' }, { label: 'Regime', text: '/regime' }],
+    [{ label: 'Back', text: '/help' }],
   ];
 }
 
@@ -843,18 +865,18 @@ function advancedButtons(source: LineSource | undefined): BotReply['buttons'] {
 function tickerReportButtons(source: LineSource | undefined, ticker: string): BotReply['buttons'] {
   if (source?.type === 'group') return [];
   return [
-    [{ label: 'News', text: `/n ${ticker} 7` }, { label: 'Flow', text: `/flow ${ticker} 5d` }],
-    [{ label: 'Watch', text: `/watch ${ticker}` }, { label: 'Brief', text: '/brief premarket' }],
-    [{ label: 'Reports', text: '/help reports' }],
+    [{ label: 'Chart', text: `/chart ${ticker}` }, { label: 'News', text: `/n ${ticker} 7` }],
+    [{ label: 'Flow', text: `/flow ${ticker} 5d` }, { label: 'Watch', text: `/watch ${ticker}` }],
+    [{ label: 'Brief', text: '/brief premarket' }, { label: 'Reports', text: '/help reports' }],
   ];
 }
 
 function buttonsFor(source: LineSource | undefined): BotReply['buttons'] {
   if (source?.type === 'group') return [];
   return [
-    [{ label: 'Stock report', text: '/q 2330' }, { label: 'Watchlist', text: '/watchlist' }],
-    [{ label: 'Brief', text: '/brief premarket' }, { label: 'Settings', text: '/help settings' }],
-    [{ label: 'Help', text: '/help' }],
+    [{ label: 'Chart', text: '/chart 2330' }, { label: 'Stock report', text: '/q 2330' }],
+    [{ label: 'Watchlist', text: '/watchlist' }, { label: 'Brief', text: '/brief premarket' }],
+    [{ label: 'Settings', text: '/help settings' }, { label: 'Help', text: '/help' }],
   ];
 }
 
@@ -1168,6 +1190,24 @@ function parseLimit(value: string | undefined, fallback: number) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(1, Math.min(200, Math.round(parsed)));
+}
+
+function stockChartUrl(input: { ticker: string; days: number; tenantId: string; channelId: string }) {
+  const baseUrl = publicBaseUrl().replace(/\/$/, '');
+  const params = new URLSearchParams({
+    ticker: input.ticker,
+    days: String(input.days),
+    tenant: input.tenantId,
+    channel: input.channelId,
+  });
+  return `${baseUrl}/api/stock-chart?${params.toString()}`;
+}
+
+function publicBaseUrl() {
+  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL;
+  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
+  return 'https://tecxbot.vercel.app';
 }
 
 function parseBriefTemplate(value: string | undefined): WatchlistBriefTemplate | undefined {

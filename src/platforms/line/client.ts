@@ -1,19 +1,19 @@
 import type { BotReply, ReplyButton } from '../../core/types.js';
-import type { LineTextReply } from './types.js';
+import type { LineImageReply, LineTextReply } from './types.js';
 
 export async function replyLineMessage(replyToken: string, reply: BotReply, accessToken?: string) {
   const token = accessToken ?? process.env.LINE_CHANNEL_ACCESS_TOKEN;
   if (!token) throw new Error('LINE_CHANNEL_ACCESS_TOKEN not configured');
-  const message: LineTextReply = { type: 'text', text: reply.text.length > 3800 ? `${reply.text.slice(0, 3790)}...` : reply.text, quickReply: toLineQuickReply(reply.buttons ?? mainMenuButtons()) };
-  const response = await fetch('https://api.line.me/v2/bot/message/reply', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ replyToken, messages: [message] }) });
+  const messages = toLineMessages(reply, reply.buttons ?? mainMenuButtons());
+  const response = await fetch('https://api.line.me/v2/bot/message/reply', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ replyToken, messages }) });
   if (!response.ok) throw new Error(`LINE reply failed: ${response.status} ${await response.text()}`);
 }
 
 export async function pushLineMessage(to: string, reply: BotReply, accessToken?: string) {
   const token = accessToken ?? process.env.LINE_CHANNEL_ACCESS_TOKEN;
   if (!token) throw new Error('LINE_CHANNEL_ACCESS_TOKEN not configured');
-  const message: LineTextReply = { type: 'text', text: reply.text.length > 3800 ? `${reply.text.slice(0, 3790)}...` : reply.text, quickReply: toLineQuickReply(reply.buttons ?? []) };
-  const response = await fetch('https://api.line.me/v2/bot/message/push', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ to, messages: [message] }) });
+  const messages = toLineMessages(reply, reply.buttons ?? []);
+  const response = await fetch('https://api.line.me/v2/bot/message/push', { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ to, messages }) });
   if (!response.ok) throw new Error(`LINE push failed: ${response.status} ${await response.text()}`);
 }
 
@@ -27,6 +27,13 @@ export async function downloadLineMessageContent(messageId: string, accessToken?
 
 export function mainMenuButtons(): ReplyButton[][] {
   return [[{ label: 'Help', data: 'menu:help' }, { label: 'Settings', data: 'menu:settings' }], [{ label: 'Status', text: '/status' }, { label: 'Languages', text: '/languages' }]];
+}
+
+function toLineMessages(reply: BotReply, buttons: ReplyButton[][]) {
+  const textMessage: LineTextReply = { type: 'text', text: reply.text.length > 3800 ? `${reply.text.slice(0, 3790)}...` : reply.text, quickReply: toLineQuickReply(buttons) };
+  if (!reply.imageUrl) return [textMessage];
+  const imageMessage: LineImageReply = { type: 'image', originalContentUrl: reply.imageUrl, previewImageUrl: reply.imageUrl };
+  return [imageMessage, textMessage];
 }
 
 function toLineQuickReply(buttons: ReplyButton[][]) {
