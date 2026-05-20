@@ -344,13 +344,17 @@ function formatBeginnerStockCard(result: unknown) {
   const valuation = asRecord(card.valuation_numbers);
   const chart = asRecord(card.chart);
   const chartPoints = Array.isArray(chart?.points) ? chart.points.filter(isRecord) : [];
+  const changeRows = intervalChangeRows(chartPoints, price);
   return joinSections([
     `Stock report: ${[stringValue(card.ticker_id), stringValue(card.company_name)].filter(Boolean).join(' ')}${stringValue(card.as_of) ? `\nAs of ${stringValue(card.as_of)}` : ''}`,
     metricBlock('Price', [
+      ['Open', fmtNumber(price?.open)],
+      ['High', fmtNumber(price?.high)],
+      ['Low', fmtNumber(price?.low)],
       ['Close', fmtNumber(price?.close)],
-      ['Day change', fmtPct(price?.change_pct)],
-      ['Chart points', String(chartPoints.length)],
+      ['Volume', fmtCompactNumber(price?.volume)],
     ]),
+    metricBlock('Change', changeRows),
     metricBlock('Trend numbers', [
       ['RSI', fmtNumber(trend?.rsi_14)],
       ['MACD hist', fmtNumber(trend?.macd_histogram)],
@@ -1388,14 +1392,48 @@ function metricBlock(title: string, rows: Array<[string, string]>) {
   ]);
 }
 
+function intervalChangeRows(chartPoints: Record<string, unknown>[], price: Record<string, unknown> | undefined): Array<[string, string]> {
+  const points = chartPoints
+    .map((point) => ({ close: numberValue(point.close) }))
+    .filter((point): point is { close: number } => point.close !== undefined);
+  const latest = numberValue(price?.close) ?? points.at(-1)?.close;
+  return [
+    ['1d', fmtPct(price?.change_pct)],
+    ['10d', fmtPctFromCloses(latest, closeBack(points, 10))],
+    ['1m', fmtPctFromCloses(latest, closeBack(points, 21))],
+    ['3m', fmtPctFromCloses(latest, closeBack(points, 63))],
+  ];
+}
+
+function closeBack(points: Array<{ close: number }>, sessionsBack: number) {
+  const index = points.length - 1 - sessionsBack;
+  return index >= 0 ? points[index].close : undefined;
+}
+
+function fmtPctFromCloses(latest: number | undefined, previous: number | undefined) {
+  if (latest === undefined || previous === undefined || previous === 0) return '-';
+  return fmtPct((latest / previous - 1) * 100);
+}
+
 function compactSubscores(value: unknown) {
   const record = asRecord(value);
   if (!record) return undefined;
   return Object.entries(record).map(([key, val]) => `${key}: ${fmt(val)}`).join(' | ');
 }
 
+function numberValue(value: unknown) {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
 function fmtNumber(value: unknown) {
-  if (typeof value === 'number' && Number.isFinite(value)) {
+  const parsed = numberValue(value);
+  if (parsed !== undefined) {
+    const value = parsed;
     if (Number.isInteger(value)) return value.toLocaleString('en-US');
     return value.toLocaleString('en-US', { maximumFractionDigits: 2, minimumFractionDigits: 2 });
   }
@@ -1405,6 +1443,16 @@ function fmtNumber(value: unknown) {
     return value.trim();
   }
   return '-';
+}
+
+function fmtCompactNumber(value: unknown) {
+  const parsed = numberValue(value);
+  if (parsed === undefined) return '-';
+  const abs = Math.abs(parsed);
+  if (abs >= 1_000_000_000) return `${(parsed / 1_000_000_000).toFixed(2)}B`;
+  if (abs >= 1_000_000) return `${(parsed / 1_000_000).toFixed(2)}M`;
+  if (abs >= 1_000) return `${(parsed / 1_000).toFixed(2)}K`;
+  return fmtNumber(parsed);
 }
 
 function fmt(value: unknown) {
