@@ -18,6 +18,12 @@ The goal is to combine deterministic workflows with LLM interpretation:
 Current scope:
 
 - LINE webhook verification
+- Facebook Messenger webhook verification
+- Tagged Messenger task intake for engineering ops
+- Linear issue creation as the canonical task record
+- GitHub issue creation across configured repos
+- Google Tasks mirroring for non-technical task tracking
+- Daily Claude ops report endpoint for open issues and tasks
 - LINE text/postback/audio handling
 - LINE group translation commands
 - Multi-language translation using OpenAI
@@ -41,6 +47,83 @@ See also:
 
 - `docs/multi-tenant-architecture.md`
 - `docs/neon-schema.sql`
+
+## Messenger ops intake
+
+Tecxbot can act as the phone-friendly intake layer for the TecxCorp company OS.
+When someone tags the bot in Messenger, it extracts concrete work, creates a
+canonical Linear issue, creates GitHub issues in one or more configured repos
+when code work is involved, and mirrors the same work into Google Tasks when
+that is useful for non-technical tracking.
+
+Configure Meta to call:
+
+```text
+https://your-domain.vercel.app/api/facebook-webhook
+```
+
+Required environment:
+
+```text
+FB_VERIFY_TOKEN=...
+FB_APP_SECRET=...
+FB_PAGE_ACCESS_TOKEN=...
+OPS_GITHUB_TOKEN=...
+OPS_GITHUB_REPOS=tecxmate/tecxcorp,tecxmate/another-repo
+LINEAR_API_KEY=...
+LINEAR_TEAM_ID=...
+GOOGLE_TASKS_ACCESS_TOKEN=...
+GOOGLE_TASKS_LIST_ID=@default
+OPENAI_API_KEY=...
+```
+
+Optional routing:
+
+```text
+FB_BOT_MENTION_NAMES=tecxbot,tecxmate
+OPS_REPO_ALIASES=corp=tecxmate/tecxcorp,bot=tecxmate/tecxbot
+OPS_GITHUB_DEFAULT_ASSIGNEES=github-user
+OPS_GITHUB_LABELS=ops-task,from-messenger
+OPS_TEAM_DIRECTORY_FILE=/Users/niko/antigravity/tecxcorp/ops/task_owner_contacts.csv
+LINEAR_PROJECT_ID=
+LINEAR_LABEL_IDS=
+LINEAR_DEFAULT_ASSIGNEE_ID=
+```
+
+`OPS_TEAM_DIRECTORY_FILE` can point at the live TecxCorp team CSV. The current
+`ops/task_owner_contacts.csv` schema works as-is, and Tecxbot also recognizes
+extra columns when you add them:
+
+```csv
+task_owner,full_name,position,github_login,linear_user_id,aliases,channel,recipient_id,active
+brian,Brian Doan,CTO,briandoan,linear-user-uuid,"brian|cto",messenger,PSID,yes
+```
+
+The intake prompt uses this directory to resolve human names, roles, and
+positions into task owners, Linear assignees, and GitHub assignees.
+
+Example Messenger message:
+
+```text
+@tecxbot ask @engineer to fix the onboarding error in tecxmate/tecxbot by 2026-06-01. Create proof with PR link.
+```
+
+The GitHub issue body keeps the original message, source conversation, owner,
+due date, priority, and the completion-proof rule from the TecxCorp task
+protocol.
+
+## Daily ops report
+
+Run this endpoint from Vercel Cron, GitHub Actions, or another scheduler:
+
+```text
+GET /api/ops-daily-report?secret=<CRON_SECRET>
+```
+
+It reads open Linear issues, open issues in `OPS_GITHUB_REPOS`, open Google
+Tasks, and asks Claude to summarize what is being worked on, what is slowing
+down, and what needs owner attention. Set `OPS_DAILY_REPORT_SEND=true` and
+`FB_OPS_SUMMARY_RECIPIENT_ID` to push the report back to Messenger.
 
 ## Multi-tenant webhook shape
 
