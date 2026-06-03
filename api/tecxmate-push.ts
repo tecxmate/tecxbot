@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { resolveTenantChannel } from '../src/core/tenantStore.js';
 import { pushLineMessage } from '../src/platforms/line/client.js';
+import type { ReplyButton } from '../src/core/types.js';
 
 // The local coding agent in tecxcorp calls this after finishing a task: it
 // pushes a message (typically a Drive share link) into the client LINE group.
@@ -15,24 +16,26 @@ type PushBody = {
   text?: string;
   link?: string;
   channel?: string; // which LINE channel's credentials to use; defaults to tecxmate
+  buttons?: ReplyButton[][]; // optional tappable quick-reply pills
 };
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
   if (!isAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
 
-  const { to, text, link, channel } = (req.body || {}) as PushBody;
+  const { to, text, link, channel, buttons } = (req.body || {}) as PushBody;
   if (!to || typeof to !== 'string') return res.status(400).json({ error: 'Missing "to" (LINE target id)' });
   if ((!text || !text.trim()) && (!link || !link.trim())) return res.status(400).json({ error: 'Provide "text" and/or "link"' });
 
   const message = [text?.trim(), link?.trim()].filter(Boolean).join('\n\n');
+  const replyButtons = Array.isArray(buttons) ? buttons : undefined;
 
   try {
     const channelId = channel || process.env.TECXMATE_LINE_CHANNEL_ID || 'tecxmate';
     const runtime = resolveTenantChannel({ channelId });
     const accessToken = runtime.channel.line?.channelAccessToken;
     if (!accessToken) return res.status(500).json({ error: `LINE channel "${channelId}" has no access token configured` });
-    await pushLineMessage(to, { text: message }, accessToken);
+    await pushLineMessage(to, { text: message, buttons: replyButtons }, accessToken);
     return res.status(200).json({ ok: true });
   } catch (error) {
     const detail = error instanceof Error ? error.message : 'Push failed';
