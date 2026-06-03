@@ -20,7 +20,6 @@ export async function handleTecxmateLineEvent(event: LineEvent, runtime: LineWeb
   const botSystem = runtime.channel.botSystem.kind === 'tecxmate' ? runtime.channel.botSystem : undefined;
   if (!botSystem) return undefined;
   const source = event.source;
-  const isDirect = !source || source.type === 'user';
 
   if (event.type === 'follow' || event.type === 'join') return welcomeReply(botSystem);
   if (event.type === 'postback' && 'postback' in event) return handlePostback(event.postback?.data ?? '', source, runtime, botSystem);
@@ -47,13 +46,14 @@ export async function handleTecxmateLineEvent(event: LineEvent, runtime: LineWeb
 
   if (!owner) return notOwnerReply();
 
-  // In a group, a tag with a request is explicit → make the task.
-  // In 1:1, an explicit "task: …" is also direct; otherwise interpret the chat.
+  // Only an explicit "task: …" creates directly. Otherwise — whether tagged in a
+  // group or messaged in 1:1 — interpret the message and confirm before creating,
+  // so a casual "hey" never becomes a task.
   const explicit = /^task[:\s]/i.test(text);
-  if (!isDirect || explicit) return dispatchTask(text, source, groupId, runtime);
+  if (explicit) return dispatchTask(text, source, groupId, runtime);
 
   if (isGreeting(text)) return greetingReply(botSystem);
-  return interpretAndReply(text, source, runtime, botSystem); // LLM intent → propose a tappable action
+  return interpretAndReply(text, source, runtime, botSystem); // NL intent → propose a tappable action, confirm before acting
 }
 
 // ---- tappable buttons (postback) ----
@@ -161,7 +161,7 @@ async function dispatchTask(instruction: string, source: LineSource | undefined,
       labelIds: config.linearLabelIds,
     });
     return {
-      text: `✅ Got it. I've asked the team to:\n“${title}”\n\nI'll message you here when the draft is ready to review.`,
+      text: `✅ Got it — I've started on this:\n“${title}”\n\nI'll send it to you privately to review, then share the final version here once you approve.`,
       buttons: menuButtons(),
     };
   } catch (error) {
