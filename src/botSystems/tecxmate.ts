@@ -20,9 +20,10 @@ export async function handleTecxmateLineEvent(event: LineEvent, runtime: LineWeb
   const botSystem = runtime.channel.botSystem.kind === 'tecxmate' ? runtime.channel.botSystem : undefined;
   if (!botSystem) return undefined;
   const source = event.source;
+  const inGroup = !!(source && source.type !== 'user');
 
-  if (event.type === 'follow' || event.type === 'join') return welcomeReply(botSystem);
-  if (event.type === 'postback' && 'postback' in event) return handlePostback(event.postback?.data ?? '', source, runtime, botSystem);
+  if (event.type === 'follow' || event.type === 'join') return welcomeReply(botSystem, inGroup);
+  if (event.type === 'postback' && 'postback' in event) return trimForGroup(await handlePostback(event.postback?.data ?? '', source, runtime, botSystem), inGroup);
   if (event.type !== 'message' || !('message' in event) || event.message.type !== 'text') return undefined;
 
   const groupId = source?.groupId ?? source?.roomId;
@@ -35,25 +36,39 @@ export async function handleTecxmateLineEvent(event: LineEvent, runtime: LineWeb
 
   const text = mention.text.trim();
 
-  // Commands — work everywhere, typed or tapped.
-  if (!text || /^(menu|home|start)$/i.test(text)) return menuReply(botSystem);
-  if (/^(help|說明|\?)$/i.test(text)) return helpReply(botSystem);
-  if (/^(status|whoami)$/i.test(text)) return statusReply(source, botSystem);
+  const reply = await (async (): Promise<BotReply | undefined> => {
+    // Management commands are 1:1-only — keep client groups clean for everyone else.
+    if (!text || /^(menu|home|start)$/i.test(text)) return inGroup ? undefined : menuReply(botSystem);
+    if (/^(help|說明|\?)$/i.test(text)) return inGroup ? undefined : helpReply(botSystem);
+    if (/^(status|whoami)$/i.test(text)) return inGroup ? undefined : statusReply(source, botSystem);
 
-  const owner = isOwner(source, botSystem);
-  const approval = parseApprovalCommand(text);
-  if (approval) return owner ? handleApproval(approval, runtime) : notOwnerReply();
+    const owner = isOwner(source, botSystem);
+    const approval = parseApprovalCommand(text);
+    if (approval) {
+      if (!owner) return inGroup ? undefined : notOwnerReply();
+      if (approval.action === 'pending' && inGroup) return undefined; // the pending list is 1:1-only
+      return handleApproval(approval, runtime);
+    }
+    if (!owner) return inGroup ? undefined : notOwnerReply();
 
-  if (!owner) return notOwnerReply();
+    // Only an explicit "task: …" creates directly. Otherwise interpret + confirm.
+    const explicit = /^task[:\s]/i.test(text);
+    if (explicit) return dispatchTask(text, source, groupId, runtime);
+    if (isGreeting(text)) return inGroup ? undefined : greetingReply(botSystem);
+    return interpretAndReply(text, source, runtime, botSystem, inGroup);
+  })();
 
-  // Only an explicit "task: …" creates directly. Otherwise — whether tagged in a
-  // group or messaged in 1:1 — interpret the message and confirm before creating,
-  // so a casual "hey" never becomes a task.
-  const explicit = /^task[:\s]/i.test(text);
-  if (explicit) return dispatchTask(text, source, groupId, runtime);
+  return trimForGroup(reply, inGroup);
+}
 
-  if (isGreeting(text)) return greetingReply(botSystem);
-  return interpretAndReply(text, source, runtime, botSystem); // NL intent → propose a tappable action, confirm before acting
+// In a group, drop the 1:1 management pills (New task / Pending / Status / Help)
+// so the chat stays clean — keep task-action buttons (Yes/No, Approve, …).
+function trimForGroup(reply: BotReply | undefined, inGroup: boolean): BotReply | undefined {
+  if (!reply || !inGroup || !reply.buttons) return reply;
+  const rows = reply.buttons
+    .map((row) => row.filter((button) => !/^tm:(new|pending|status|help|menu)$/.test(button.data ?? '')))
+    .filter((row) => row.length);
+  return { ...reply, buttons: rows.length ? rows : undefined };
 }
 
 // ---- tappable buttons (postback) ----
@@ -251,7 +266,7 @@ function isGreeting(text: string): boolean {
 // with the matching button to tap. The model only ROUTES — every consequential
 // action still needs a confirm tap, so a misread can't send or create on its own.
 // Its "memory" is the list of pending drafts (so it can resolve "it"/"the contract").
-async function interpretAndReply(text: string, source: LineSource | undefined, runtime: LineWebhookRuntime, botSystem: TecxmateBot): Promise<BotReply> {
+async function interpretAndReply(text: string, source: LineSource | undefined, runtime: LineWebhookRuntime, botSystem: TecxmateBot, inGroup: boolean): Promise<BotReply | undefined> {
   const config = getOpsConfig();
   if (!config.openAiApiKey) return offerTaskReply(text); // no LLM → deterministic confirm
   let pending: Array<{ identifier: string; title: string }> = [];
@@ -264,7 +279,7 @@ async function interpretAndReply(text: string, source: LineSource | undefined, r
   } catch {
     return offerTaskReply(text); // LLM failed → fall back to the safe confirm
   }
-  return intentToReply(intent, text, pending, source, runtime, botSystem);
+  return intentToReply(intent, text, pending, source, runtime, botSystem, inGroup);
 }
 
 async function classifyIntent(apiKey: string, text: string, pending: Array<{ identifier: string; title: string }>): Promise<{ action: string; issueId?: string; taskText?: string }> {
@@ -305,7 +320,7 @@ async function classifyIntent(apiKey: string, text: string, pending: Array<{ ide
   return { action: String(parsed.action || 'unknown'), issueId: parsed.issueId ? String(parsed.issueId) : undefined, taskText: parsed.taskText ? String(parsed.taskText) : undefined };
 }
 
-async function intentToReply(intent: { action: string; issueId?: string; taskText?: string }, originalText: string, pending: Array<{ identifier: string; title: string }>, source: LineSource | undefined, runtime: LineWebhookRuntime, botSystem: TecxmateBot): Promise<BotReply> {
+async function intentToReply(intent: { action: string; issueId?: string; taskText?: string }, originalText: string, pending: Array<{ identifier: string; title: string }>, source: LineSource | undefined, runtime: LineWebhookRuntime, botSystem: TecxmateBot, inGroup: boolean): Promise<BotReply | undefined> {
   const resolveId = (raw?: string): string | undefined => {
     const candidate = raw?.toUpperCase().trim();
     if (candidate) {
@@ -321,23 +336,25 @@ async function intentToReply(intent: { action: string; issueId?: string; taskTex
       return offerTaskReply((intent.taskText || originalText).trim());
     case 'approve': {
       const id = resolveId(intent.issueId);
-      return id ? handleApproval({ action: 'approve', id }, runtime) : handleApproval({ action: 'pending' }, runtime);
+      if (id) return handleApproval({ action: 'approve', id }, runtime);
+      return inGroup ? undefined : handleApproval({ action: 'pending' }, runtime);
     }
     case 'discard': {
       const id = resolveId(intent.issueId);
       if (id) return { text: `Discard ${id}? It will be cancelled and nothing is sent.`, buttons: [[{ label: '✅ Yes, discard', data: `tm:discard:${id}` }, { label: '✖️ No', data: 'tm:cancel' }]] };
-      return handleApproval({ action: 'pending' }, runtime);
+      return inGroup ? undefined : handleApproval({ action: 'pending' }, runtime);
     }
+    // The rest are owner-management / chit-chat — 1:1 only, never clutter a group.
     case 'pending':
-      return handleApproval({ action: 'pending' }, runtime);
+      return inGroup ? undefined : handleApproval({ action: 'pending' }, runtime);
     case 'status':
-      return statusReply(source, botSystem);
+      return inGroup ? undefined : statusReply(source, botSystem);
     case 'help':
-      return helpReply(botSystem);
+      return inGroup ? undefined : helpReply(botSystem);
     case 'smalltalk':
-      return greetingReply(botSystem);
+      return inGroup ? undefined : greetingReply(botSystem);
     default:
-      return { text: 'I wasn\'t quite sure what you meant — here\'s what I can do:', buttons: menuButtons() };
+      return inGroup ? undefined : { text: 'I wasn\'t quite sure what you meant — here\'s what I can do:', buttons: menuButtons() };
   }
 }
 
@@ -383,7 +400,8 @@ function notOwnerReply(): BotReply {
   return { text: 'Only the account owner can manage tasks here.', buttons: [] };
 }
 
-function welcomeReply(botSystem: TecxmateBot): BotReply {
+function welcomeReply(botSystem: TecxmateBot, inGroup = false): BotReply {
+  if (inGroup) return { text: `Hi 👋 I'm the ${botSystem.companyName} assistant — tag me here whenever you need a document or task.` };
   return {
     text: `Hi! 👋 I'm the ${botSystem.companyName} assistant.\n\nIn a client group, tag me to turn the chat into a task. Here in our 1:1 chat, just tell me what you need — or tap a button below.`,
     buttons: menuButtons(),
