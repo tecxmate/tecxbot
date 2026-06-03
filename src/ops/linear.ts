@@ -132,6 +132,21 @@ export async function moveLinearIssueToType(apiKey: string, teamId: string, issu
   `, { id: issueId, stateId });
 }
 
+// Send an issue back for revision: append feedback to the description and move it
+// to "Todo" so the agent re-drafts it (the tick re-processes Todo tasks).
+export async function reviseLinearIssue(apiKey: string, teamId: string, issueId: string, description: string): Promise<void> {
+  const states = await linearGraphql<{ workflowStates?: { nodes?: Array<{ id: string; name: string; team?: { id: string } }> } }>(apiKey, `
+    query States { workflowStates(first: 250) { nodes { id name team { id } } } }
+  `, {});
+  const stateId = states.workflowStates?.nodes?.find((state) => state.team?.id === teamId && state.name === 'Todo')?.id;
+  if (!stateId) throw new Error('No "Todo" workflow state found for team');
+  await linearGraphql(apiKey, `
+    mutation Revise($id: String!, $stateId: String!, $description: String!) {
+      issueUpdate(id: $id, input: { stateId: $stateId, description: $description }) { success }
+    }
+  `, { id: issueId, stateId, description });
+}
+
 export async function listLinearIssuesByStateName(apiKey: string, teamId: string, stateName: string): Promise<Array<{ identifier: string; title: string }>> {
   const response = await linearGraphql<{ issues?: { nodes?: Array<{ identifier: string; title: string }> } }>(apiKey, `
     query InState($teamId: ID!, $name: String!) {

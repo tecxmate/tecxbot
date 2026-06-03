@@ -1,6 +1,6 @@
 import { appendGroupContextMessage, getGroupTranslationSettings, setGroupTranslationLanguages, type GroupContextMessage } from '../core/groupTranslationStore.js';
 import { getOpsConfig } from '../ops/config.js';
-import { createLinearIssue, getLinearIssueByIdentifier, listLinearIssuesByStateName, moveLinearIssueToType } from '../ops/linear.js';
+import { createLinearIssue, getLinearIssueByIdentifier, listLinearIssuesByStateName, moveLinearIssueToType, reviseLinearIssue } from '../ops/linear.js';
 import { pushLineMessage } from '../platforms/line/client.js';
 import type { BotReply, TenantConfig } from '../core/types.js';
 import type { LineEvent, LineMessage, LineSource } from '../platforms/line/types.js';
@@ -73,20 +73,28 @@ async function handlePostback(data: string, source: LineSource | undefined, runt
   if (d.startsWith('approve:')) return handleApproval({ action: 'approve', id: d.slice('approve:'.length) }, runtime);
   if (d.startsWith('send:')) return handleApproval({ action: 'send', id: d.slice('send:'.length) }, runtime);
   if (d.startsWith('discard:')) return handleApproval({ action: 'discard', id: d.slice('discard:'.length) }, runtime);
+  if (d.startsWith('revise:')) { const id = d.slice('revise:'.length); return { text: `What should change on ${id}?\nReply:  revise ${id} <your changes>`, buttons: menuButtons() }; }
+  if (d.startsWith('end:')) { const id = d.slice('end:'.length); return { text: `End ${id} without sending?`, buttons: [[{ label: '🛑 Yes, end', data: `tm:enddo:${id}` }, { label: '✖️ No', data: 'tm:cancel' }]] }; }
+  if (d.startsWith('enddo:')) return handleApproval({ action: 'end', id: d.slice('enddo:'.length) }, runtime);
   return menuReply(botSystem);
 }
 
 // ---- approvals ----
 
-type ApprovalCommand = { action: 'approve' | 'send' | 'discard' | 'pending'; id?: string };
+type ApprovalCommand = { action: 'approve' | 'send' | 'discard' | 'end' | 'revise' | 'pending'; id?: string; feedback?: string };
 
 // "approve" shows a confirm; the actual client send only happens on "send"
 // (a Yes-tap or the explicit confirm button) — so a stray tap never sends.
+// "revise <id> <feedback>" sends the draft back for changes; "end <id>" closes it.
 function parseApprovalCommand(text: string): ApprovalCommand | undefined {
-  const match = text.match(/^(approve|send|discard|reject|cancel)\s+([A-Za-z]+-\d+)\b/i);
+  const revise = text.match(/^(revise|changes?|edit)\s+([A-Za-z]+-\d+)\b[:\s]*(.*)$/is);
+  if (revise) return { action: 'revise', id: revise[2].toUpperCase(), feedback: revise[3].trim() };
+  const match = text.match(/^(approve|send|discard|reject|cancel|end|close)\s+([A-Za-z]+-\d+)\b/i);
   if (match) {
     const verb = match[1].toLowerCase();
-    const action = verb === 'discard' || verb === 'reject' || verb === 'cancel' ? 'discard' : verb === 'send' ? 'send' : 'approve';
+    const action = verb === 'end' || verb === 'close' ? 'end'
+      : verb === 'discard' || verb === 'reject' || verb === 'cancel' ? 'discard'
+      : verb === 'send' ? 'send' : 'approve';
     return { action, id: match[2].toUpperCase() };
   }
   if (/^(pending|queue|review|drafts)$/i.test(text)) return { action: 'pending' };
@@ -110,13 +118,21 @@ async function handleApproval(cmd: ApprovalCommand, runtime: LineWebhookRuntime)
   const issue = await getLinearIssueByIdentifier(config.linearApiKey, config.linearTeamId, cmd.id!);
   if (!issue) return { text: `I couldn't find ${cmd.id}.`, buttons: menuButtons() };
 
-  if (cmd.action === 'discard') {
+  if (cmd.action === 'discard' || cmd.action === 'end') {
     await moveLinearIssueToType(config.linearApiKey, config.linearTeamId, issue.id, 'canceled');
-    return { text: `Discarded ${issue.identifier}. Nothing was sent. 🗑️`, buttons: menuButtons() };
+    return { text: `🛑 Ended ${issue.identifier} — closed, nothing was sent.`, buttons: menuButtons() };
+  }
+
+  if (cmd.action === 'revise') {
+    const feedback = cmd.feedback?.trim();
+    if (!feedback) return { text: `What should change on ${issue.identifier}? Reply:\nrevise ${issue.identifier} <your changes>`, buttons: menuButtons() };
+    await reviseLinearIssue(config.linearApiKey, config.linearTeamId, issue.id, `${issue.description}\n\n## Revision requested\n${feedback}`);
+    return { text: `✏️ Got it — sending ${issue.identifier} back for changes:\n“${feedback.slice(0, 140)}”\n\nI'll redraft and send you a new version to review.`, buttons: menuButtons() };
   }
 
   const replyTarget = parseStagedMeta(issue.description, 'reply_target');
-  const docUrl = issue.attachments.find((attachment) => /staged|doc|draft/i.test(attachment.title ?? ''))?.url ?? issue.attachments[0]?.url;
+  // Pick the most recent staged attachment (revisions append new ones).
+  const docUrl = [...issue.attachments].reverse().find((attachment) => /staged|doc|draft/i.test(attachment.title ?? ''))?.url ?? issue.attachments[issue.attachments.length - 1]?.url;
   if (!replyTarget || !docUrl) return { text: `${issue.identifier} isn't ready yet — it may still be drafting.`, buttons: menuButtons() };
 
   // "approve" = show a confirm; only "send" actually delivers to the client.
@@ -408,11 +424,14 @@ function shortId(userId?: string) {
 function normalizeMention(message: LineMessage, source: LineSource | undefined, names: string[]) {
   const text = message.type === 'text' ? message.text.trim() : '';
   if (!source || source.type === 'user') return { shouldReply: true, text };
+  // In a group, only respond to a REAL @-mention of this bot (LINE marks it
+  // isSelf) — never to a message that merely contains a word like "bot".
   if (message.type === 'text' && message.mention?.mentionees?.some((mentionee) => mentionee.isSelf)) {
     return { shouldReply: true, text: stripMentionNames(text, names) };
   }
-  const pattern = mentionPattern(names);
-  if (pattern.test(text)) return { shouldReply: true, text: text.replace(pattern, '').trim() };
+  // Fallback only when the message STARTS with the bot's name (typed, no picker).
+  const startPattern = new RegExp(`^\\s*@?(${names.map(escapeRegExp).join('|')})\\b[\\s,:，、]*`, 'i');
+  if (startPattern.test(text)) return { shouldReply: true, text: text.replace(startPattern, '').trim() };
   return { shouldReply: false, text };
 }
 
