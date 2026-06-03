@@ -1,6 +1,6 @@
 export type Platform = 'line' | 'facebook' | 'telegram' | 'whatsapp' | 'zalo' | 'web';
 
-export type BotSystemKind = 'group_translator' | 'mcp_agent' | 'vietnamese_teacher';
+export type BotSystemKind = 'group_translator' | 'mcp_agent' | 'vietnamese_teacher' | 'tecxmate';
 
 export type TenantConfig = {
   id: string;
@@ -27,6 +27,13 @@ export type BotSystemConfig =
       appName: string;
       appTagline?: string;
       appUrl?: string;
+    }
+  | {
+      kind: 'tecxmate';
+      companyName: string;
+      // LINE user ids allowed to dispatch tasks. Empty = personal deployment
+      // where anyone who can tag the bot is treated as the owner.
+      ownerUserIds: string[];
     };
 
 export type TenantChannelConfig = {

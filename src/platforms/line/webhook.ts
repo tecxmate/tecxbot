@@ -9,6 +9,7 @@ import type { BotReply, TenantChannelConfig, TenantConfig, TranscriptLanguage } 
 import { canConsumeCharacters, consumeCharacters, getRemainingCharacters } from '../../core/usageStore.js';
 import { handleMcpAgentLineEvent } from '../../botSystems/mcpAgent.js';
 import { handleVietnameseTeacherLineEvent } from '../../botSystems/vietnameseTeacher.js';
+import { handleTecxmateLineEvent } from '../../botSystems/tecxmate.js';
 import { downloadLineMessageContent, mainMenuButtons, replyLineMessage } from './client.js';
 import type { LineEvent, LineMessage, LineSource, LineWebhookPayload } from './types.js';
 
@@ -36,6 +37,7 @@ export async function handleLineWebhook(payload: LineWebhookPayload, runtime: Li
 async function handleLineEvent(event: LineEvent, runtime: LineWebhookRuntime): Promise<BotReply | undefined> {
   if (runtime.channel.botSystem.kind === 'mcp_agent') return handleMcpAgentLineEvent(event, runtime);
   if (runtime.channel.botSystem.kind === 'vietnamese_teacher') return handleVietnameseTeacherLineEvent(event, runtime);
+  if (runtime.channel.botSystem.kind === 'tecxmate') return handleTecxmateLineEvent(event, runtime);
   const tenant = runtime.tenant;
   const source = event.source;
   const session = getSession({ tenantId: tenant.id, platform: 'line', sourceType: source?.type ?? 'user', sourceId: source?.groupId ?? source?.roomId ?? source?.userId ?? 'unknown', userId: source?.userId });

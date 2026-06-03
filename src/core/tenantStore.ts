@@ -77,6 +77,41 @@ if (process.env.VN_LINE_CHANNEL_ACCESS_TOKEN) {
   });
 }
 
+// Tecxmate client bot — a separate LINE channel that fronts client groups.
+// It ingests recent group chat as context and dispatches tasks to Linear, which
+// the local coding agent in tecxcorp picks up. Only registered when its access
+// token is configured, so the other bots keep working untouched without it.
+const tecxmateTenantId = process.env.TECXMATE_TENANT_ID || 'tecxmate';
+const tecxmateChannelId = process.env.TECXMATE_LINE_CHANNEL_ID || 'tecxmate';
+
+if (process.env.TECXMATE_LINE_CHANNEL_ACCESS_TOKEN) {
+  const tecxmateBotSystem: BotSystemConfig = {
+    kind: 'tecxmate',
+    companyName: process.env.TECXMATE_COMPANY_NAME || 'TECXMATE',
+    ownerUserIds: (process.env.TECXMATE_OWNER_USER_IDS || '').split(',').map((id) => id.trim()).filter(Boolean),
+  };
+  tenants.set(tecxmateTenantId, {
+    id: tecxmateTenantId,
+    name: process.env.TECXMATE_COMPANY_NAME || 'TECXMATE',
+    defaultLanguage: 'en',
+    domainContext: 'Client-facing assistant for TECXMATE document and contract operations.',
+    botMentionNames: (process.env.TECXMATE_BOT_MENTION_NAMES || 'tecxmate,mate,bot').split(',').map((name) => name.trim()).filter(Boolean),
+    freePlan: { id: 'free', name: 'Free', characterLimit: Number(process.env.FREE_CHARACTER_LIMIT || 5000) },
+    botSystem: tecxmateBotSystem,
+  });
+  lineChannels.set(tecxmateChannelId, {
+    id: tecxmateChannelId,
+    tenantId: tecxmateTenantId,
+    platform: 'line',
+    label: 'Tecxmate client LINE channel',
+    botSystem: tecxmateBotSystem,
+    line: {
+      channelSecret: process.env.TECXMATE_LINE_CHANNEL_SECRET || '',
+      channelAccessToken: process.env.TECXMATE_LINE_CHANNEL_ACCESS_TOKEN,
+    },
+  });
+}
+
 export function getTenantConfig(tenantId = defaultTenantId): TenantConfig {
   return tenants.get(tenantId) ?? tenants.get(defaultTenantId)!;
 }
