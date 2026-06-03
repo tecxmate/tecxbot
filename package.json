@@ -7,6 +7,7 @@
     "build": "tsc -p tsconfig.json",
     "line:set-webhook": "node scripts/line-set-webhook.mjs",
     "line:set-rich-menu": "node scripts/line-set-rich-menu.mjs",
+    "telegram:set-webhook": "node --env-file=.env scripts/telegram-set-webhook.mjs",
     "dev": "vercel dev"
   },
   "dependencies": {},

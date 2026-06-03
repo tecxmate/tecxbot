@@ -1,6 +1,6 @@
 export type Platform = 'line' | 'facebook' | 'telegram' | 'whatsapp' | 'zalo' | 'web';
 
-export type BotSystemKind = 'group_translator' | 'mcp_agent';
+export type BotSystemKind = 'group_translator' | 'mcp_agent' | 'vietnamese_teacher';
 
 export type TenantConfig = {
   id: string;
@@ -21,6 +21,12 @@ export type BotSystemConfig =
       mcpEndpoint: string;
       systemPrompt?: string;
       allowedTools?: string[];
+    }
+  | {
+      kind: 'vietnamese_teacher';
+      appName: string;
+      appTagline?: string;
+      appUrl?: string;
     };
 
 export type TenantChannelConfig = {

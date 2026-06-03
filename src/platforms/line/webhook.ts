@@ -8,6 +8,7 @@ import { translateGroupMessage } from '../../core/translation.js';
 import type { BotReply, TenantChannelConfig, TenantConfig, TranscriptLanguage } from '../../core/types.js';
 import { canConsumeCharacters, consumeCharacters, getRemainingCharacters } from '../../core/usageStore.js';
 import { handleMcpAgentLineEvent } from '../../botSystems/mcpAgent.js';
+import { handleVietnameseTeacherLineEvent } from '../../botSystems/vietnameseTeacher.js';
 import { downloadLineMessageContent, mainMenuButtons, replyLineMessage } from './client.js';
 import type { LineEvent, LineMessage, LineSource, LineWebhookPayload } from './types.js';
 
@@ -34,6 +35,7 @@ export async function handleLineWebhook(payload: LineWebhookPayload, runtime: Li
 
 async function handleLineEvent(event: LineEvent, runtime: LineWebhookRuntime): Promise<BotReply | undefined> {
   if (runtime.channel.botSystem.kind === 'mcp_agent') return handleMcpAgentLineEvent(event, runtime);
+  if (runtime.channel.botSystem.kind === 'vietnamese_teacher') return handleVietnameseTeacherLineEvent(event, runtime);
   const tenant = runtime.tenant;
   const source = event.source;
   const session = getSession({ tenantId: tenant.id, platform: 'line', sourceType: source?.type ?? 'user', sourceId: source?.groupId ?? source?.roomId ?? source?.userId ?? 'unknown', userId: source?.userId });
@@ -96,9 +98,10 @@ async function handleGroupTranslationText(text: string, source: LineSource | und
   try {
     const result = await translateGroupMessage({ apiKey, tenant, text, targetLanguages: settings.targetLanguages, contextMessages: settings.recentMessages.slice(0, -1) });
     consumeCharacters(tenant.id, tenant.freePlan, characters);
-    const translated = result.translations.filter((item) => item.text.trim() && item.language !== result.sourceLanguage);
+    const normalizedInput = normalizeForCompare(text);
+    const translated = result.translations.filter((item) => item.text.trim() && item.language !== result.sourceLanguage && normalizeForCompare(item.text) !== normalizedInput);
     if (translated.length === 0) return undefined;
-    return { text: formatTranslationReply(result.sourceLanguage, translated) };
+    return { text: formatTranslationReply(translated) };
   } catch (error) {
     console.error('[line-translation] Failed:', error);
     return { text: `翻譯失敗：${formatError(error)}`, buttons: [] };
@@ -135,9 +138,11 @@ async function handleTranslationCommand(command: TranslationCommand, source: Lin
   return helpReply(source, tenant);
 }
 
+const DEFAULT_TRANSLATION_LANGUAGES = ['en', 'tw'];
+
 function ensureGroupSettings(input: { tenantId: string; groupId: string }) {
   return getGroupTranslationSettings({ tenantId: input.tenantId, platform: 'line', groupId: input.groupId })
-    ?? setGroupTranslationLanguages({ tenantId: input.tenantId, platform: 'line', groupId: input.groupId, languageCodes: [] });
+    ?? setGroupTranslationLanguages({ tenantId: input.tenantId, platform: 'line', groupId: input.groupId, languageCodes: DEFAULT_TRANSLATION_LANGUAGES });
 }
 
 async function handleSummaryCommand(command: TranslationCommand, source: LineSource, tenant: ReturnType<typeof getTenantConfig>): Promise<BotReply> {
@@ -234,7 +239,7 @@ async function processAudio(session: ReturnType<typeof getSession>, tenant: Tena
 function welcomeReply(source: LineSource | undefined, tenant: ReturnType<typeof getTenantConfig>): BotReply {
   if (source?.type !== 'group') return directOnboardingReply();
   return {
-    text: `Tecxbot 已加入群組。\n\n我會把群組訊息翻成你設定的語言，並參考最近對話讓翻譯更自然。\n\n設定範例：\n/set en tw ja\n\n說明：/help`,
+    text: `Tecxbot 已加入群組。\n\n預設已開啟 英文 / 繁體中文 翻譯，直接聊天就會自動翻譯。\n\n想換語言：/set en tw ja\n說明：/help`,
     buttons: [],
   };
 }
@@ -344,9 +349,12 @@ function countBillableCharacters(text: string, targetLanguageCount: number) {
   return Array.from(text.trim()).length * Math.max(1, targetLanguageCount);
 }
 
-function formatTranslationReply(sourceLanguage: string, translations: Array<{ language: string; text: string }>) {
-  const lines = translations.map((item) => `${getLanguageLabel(item.language)}\n${item.text}`);
-  return [`Detected: ${getLanguageLabel(sourceLanguage)}`, ...lines].join('\n\n').slice(0, 3800);
+function formatTranslationReply(translations: Array<{ language: string; text: string }>) {
+  return translations.map((item) => item.text.trim()).filter(Boolean).join('\n\n').slice(0, 3800);
+}
+
+function normalizeForCompare(text: string) {
+  return text.replace(/\s+/g, '').toLowerCase();
 }
 
 function parseSummaryLimit(value: string | undefined) {

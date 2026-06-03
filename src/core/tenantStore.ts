@@ -42,6 +42,41 @@ const lineChannels = new Map<string, TenantChannelConfig>([
   }],
 ]);
 
+// Vietnamy teacher bot — a separate LINE channel with its own credentials.
+// Only registered when its access token is configured, so the existing
+// translation bot keeps working untouched when these env vars are absent.
+const vnTenantId = process.env.VN_TENANT_ID || 'vnmy';
+const vnChannelId = process.env.VN_LINE_CHANNEL_ID || 'vn-teacher';
+
+if (process.env.VN_LINE_CHANNEL_ACCESS_TOKEN) {
+  const vnBotSystem: BotSystemConfig = {
+    kind: 'vietnamese_teacher',
+    appName: process.env.VN_APP_NAME || 'Vietnamy',
+    appTagline: process.env.VN_APP_TAGLINE || 'Learn Vietnamese through interactive lessons, spaced repetition, a multi-source dictionary, grammar drills, and gamification — built for English and Chinese speakers.',
+    appUrl: process.env.VN_APP_URL || 'https://vietnamy.com',
+  };
+  tenants.set(vnTenantId, {
+    id: vnTenantId,
+    name: process.env.VN_APP_NAME || 'Vietnamy',
+    defaultLanguage: 'en',
+    domainContext: 'Vietnamese language learning for English and Chinese speakers.',
+    botMentionNames: (process.env.VN_BOT_MENTION_NAMES || 'vietnamy,teacher,vnmy,bot').split(',').map((name) => name.trim()).filter(Boolean),
+    freePlan: { id: 'free', name: 'Free', characterLimit: Number(process.env.FREE_CHARACTER_LIMIT || 5000) },
+    botSystem: vnBotSystem,
+  });
+  lineChannels.set(vnChannelId, {
+    id: vnChannelId,
+    tenantId: vnTenantId,
+    platform: 'line',
+    label: 'Vietnamy teacher LINE channel',
+    botSystem: vnBotSystem,
+    line: {
+      channelSecret: process.env.VN_LINE_CHANNEL_SECRET || '',
+      channelAccessToken: process.env.VN_LINE_CHANNEL_ACCESS_TOKEN,
+    },
+  });
+}
+
 export function getTenantConfig(tenantId = defaultTenantId): TenantConfig {
   return tenants.get(tenantId) ?? tenants.get(defaultTenantId)!;
 }
