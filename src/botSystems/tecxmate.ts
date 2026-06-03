@@ -53,7 +53,7 @@ export async function handleTecxmateLineEvent(event: LineEvent, runtime: LineWeb
   if (!isDirect || explicit) return dispatchTask(text, source, groupId, runtime);
 
   if (isGreeting(text)) return greetingReply(botSystem);
-  return offerTaskReply(text); // looks like a request → confirm before creating
+  return interpretAndReply(text, source, runtime, botSystem); // LLM intent → propose a tappable action
 }
 
 // ---- tappable buttons (postback) ----
@@ -226,6 +226,101 @@ function isOwner(source: LineSource | undefined, botSystem: TecxmateBot): boolea
 
 function isGreeting(text: string): boolean {
   return /^(hi|hello|hey|yo|sup|gm|gn|hiya|good\s*(morning|afternoon|evening|night)|thanks?|thank\s*you|thx|ty|ok|okay|k|cool|nice|great|👍|🙏|❤️|hi\s*bot|hey\s*bot)[.!?]*$/i.test(text.trim());
+}
+
+// ---- natural-language intent (lightweight LLM router) ----
+// The owner can type a sentence; a small model maps it to ONE action and we reply
+// with the matching button to tap. The model only ROUTES — every consequential
+// action still needs a confirm tap, so a misread can't send or create on its own.
+// Its "memory" is the list of pending drafts (so it can resolve "it"/"the contract").
+async function interpretAndReply(text: string, source: LineSource | undefined, runtime: LineWebhookRuntime, botSystem: TecxmateBot): Promise<BotReply> {
+  const config = getOpsConfig();
+  if (!config.openAiApiKey) return offerTaskReply(text); // no LLM → deterministic confirm
+  let pending: Array<{ identifier: string; title: string }> = [];
+  try {
+    if (config.linearApiKey && config.linearTeamId) pending = await listLinearIssuesByStateName(config.linearApiKey, config.linearTeamId, 'In Review');
+  } catch { /* best-effort context */ }
+  let intent: { action: string; issueId?: string; taskText?: string };
+  try {
+    intent = await classifyIntent(config.openAiApiKey, text, pending);
+  } catch {
+    return offerTaskReply(text); // LLM failed → fall back to the safe confirm
+  }
+  return intentToReply(intent, text, pending, source, runtime, botSystem);
+}
+
+async function classifyIntent(apiKey: string, text: string, pending: Array<{ identifier: string; title: string }>): Promise<{ action: string; issueId?: string; taskText?: string }> {
+  const pendingList = pending.length ? pending.map((item) => `${item.identifier} — ${item.title.slice(0, 60)}`).join('\n') : 'none';
+  const system = [
+    'You route ONE LINE message from a business owner to ONE action for an assistant bot.',
+    'The bot drafts documents (called "tasks") and, after the owner approves, sends a finished draft to a client.',
+    'Reply with JSON only: {"action": "...", "issueId": "...", "taskText": "..."}.',
+    '',
+    'Actions:',
+    '- new_task: owner wants the team to draft/create/edit a document. Put a clear imperative instruction in taskText.',
+    '- approve: owner wants to send/approve a finished draft to a client. If a specific draft is referenced, set issueId.',
+    '- discard: owner wants to cancel a draft. Set issueId if referenced.',
+    '- pending: owner asks what is waiting / to review / pending.',
+    '- status: owner asks whether things are working.',
+    '- help: owner asks how to use this or what it can do.',
+    '- smalltalk: greeting, thanks, or chit-chat.',
+    '- unknown: cannot tell.',
+    '',
+    'Drafts awaiting approval (use to resolve "it" / "the contract" / "the Acme one"):',
+    pendingList,
+    '',
+    'Pick exactly one action. Only use an issueId from the list above. Output JSON only.',
+  ].join('\n');
+  const response = await fetch('https://api.openai.com/v1/chat/completions', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: process.env.OPENAI_OPS_MODEL || process.env.OPENAI_TRANSLATION_MODEL || 'gpt-4o-mini',
+      temperature: 0,
+      response_format: { type: 'json_object' },
+      messages: [{ role: 'system', content: system }, { role: 'user', content: text.slice(0, 1000) }],
+    }),
+  });
+  if (!response.ok) throw new Error(`OpenAI intent failed: ${response.status}`);
+  const data = await response.json() as { choices?: Array<{ message?: { content?: string } }> };
+  const parsed = JSON.parse(data.choices?.[0]?.message?.content || '{}') as { action?: string; issueId?: string; taskText?: string };
+  return { action: String(parsed.action || 'unknown'), issueId: parsed.issueId ? String(parsed.issueId) : undefined, taskText: parsed.taskText ? String(parsed.taskText) : undefined };
+}
+
+async function intentToReply(intent: { action: string; issueId?: string; taskText?: string }, originalText: string, pending: Array<{ identifier: string; title: string }>, source: LineSource | undefined, runtime: LineWebhookRuntime, botSystem: TecxmateBot): Promise<BotReply> {
+  const resolveId = (raw?: string): string | undefined => {
+    const candidate = raw?.toUpperCase().trim();
+    if (candidate) {
+      const match = pending.find((item) => item.identifier.toUpperCase() === candidate);
+      if (match) return match.identifier;
+      if (/^[A-Z]+-\d+$/.test(candidate)) return candidate;
+    }
+    return pending.length === 1 ? pending[0].identifier : undefined;
+  };
+
+  switch (intent.action) {
+    case 'new_task':
+      return offerTaskReply((intent.taskText || originalText).trim());
+    case 'approve': {
+      const id = resolveId(intent.issueId);
+      return id ? handleApproval({ action: 'approve', id }, runtime) : handleApproval({ action: 'pending' }, runtime);
+    }
+    case 'discard': {
+      const id = resolveId(intent.issueId);
+      if (id) return { text: `Discard ${id}? It will be cancelled and nothing is sent.`, buttons: [[{ label: '✅ Yes, discard', data: `tm:discard:${id}` }, { label: '✖️ No', data: 'tm:cancel' }]] };
+      return handleApproval({ action: 'pending' }, runtime);
+    }
+    case 'pending':
+      return handleApproval({ action: 'pending' }, runtime);
+    case 'status':
+      return statusReply(source, botSystem);
+    case 'help':
+      return helpReply(botSystem);
+    case 'smalltalk':
+      return greetingReply(botSystem);
+    default:
+      return { text: 'I wasn\'t quite sure what you meant — here\'s what I can do:', buttons: menuButtons() };
+  }
 }
 
 // ---- replies ----
