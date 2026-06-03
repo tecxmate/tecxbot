@@ -1,6 +1,7 @@
 import { appendGroupContextMessage, getGroupTranslationSettings, setGroupTranslationLanguages, type GroupContextMessage } from '../core/groupTranslationStore.js';
 import { getOpsConfig } from '../ops/config.js';
-import { createLinearIssue } from '../ops/linear.js';
+import { createLinearIssue, getLinearIssueByIdentifier, listLinearIssuesByStateName, moveLinearIssueToType } from '../ops/linear.js';
+import { pushLineMessage } from '../platforms/line/client.js';
 import type { BotReply, TenantConfig } from '../core/types.js';
 import type { LineEvent, LineMessage, LineSource } from '../platforms/line/types.js';
 import type { LineWebhookRuntime } from '../platforms/line/webhook.js';
@@ -38,7 +39,57 @@ export async function handleTecxmateLineEvent(event: LineEvent, runtime: LineWeb
     return { text: 'Only the account owner can dispatch tasks from this bot. Your message was noted but no task was created.' };
   }
 
+  const approval = parseApprovalCommand(instruction);
+  if (approval) return handleApproval(approval, runtime);
+
   return dispatchTask(instruction, source, groupId, runtime);
+}
+
+type ApprovalCommand = { action: 'approve' | 'discard' | 'pending'; id?: string };
+
+// Owner approval of a staged draft: "approve TECX-26" sends the staged doc to
+// the client and marks it Done; "discard TECX-26" cancels it; "pending" lists
+// what is awaiting approval. The tick (on the agent host) stages the doc link as
+// a Linear attachment and moves the task to "In Review" — Linear is the store.
+function parseApprovalCommand(text: string): ApprovalCommand | undefined {
+  const match = text.match(/^(approve|send|discard|reject)\s+([A-Za-z]+-\d+)\b/i);
+  if (match) return { action: /^(discard|reject)$/i.test(match[1]) ? 'discard' : 'approve', id: match[2].toUpperCase() };
+  if (/^(pending|queue|review)$/i.test(text)) return { action: 'pending' };
+  return undefined;
+}
+
+async function handleApproval(cmd: ApprovalCommand, runtime: LineWebhookRuntime): Promise<BotReply> {
+  const config = getOpsConfig();
+  if (!config.linearApiKey || !config.linearTeamId) return { text: 'Linear is not configured.' };
+
+  if (cmd.action === 'pending') {
+    const items = await listLinearIssuesByStateName(config.linearApiKey, config.linearTeamId, 'In Review');
+    if (!items.length) return { text: 'No drafts pending approval.' };
+    return { text: ['Pending approval:', ...items.map((item) => `• ${item.identifier} ${item.title.slice(0, 50)}`), '', 'Reply: approve <id>  or  discard <id>'].join('\n') };
+  }
+
+  const issue = await getLinearIssueByIdentifier(config.linearApiKey, config.linearTeamId, cmd.id!);
+  if (!issue) return { text: `Task ${cmd.id} not found.` };
+
+  if (cmd.action === 'discard') {
+    await moveLinearIssueToType(config.linearApiKey, config.linearTeamId, issue.id, 'canceled');
+    return { text: `Discarded ${issue.identifier}. Nothing was sent to the client.` };
+  }
+
+  const replyTarget = parseStagedMeta(issue.description, 'reply_target');
+  const docUrl = issue.attachments.find((attachment) => /staged|doc|draft/i.test(attachment.title ?? ''))?.url ?? issue.attachments[0]?.url;
+  if (!replyTarget || !docUrl) return { text: `${issue.identifier} has no staged document yet — it may still be drafting.` };
+  const token = runtime.channel.line?.channelAccessToken;
+  if (!token) return { text: 'LINE channel token is not configured.' };
+
+  await pushLineMessage(replyTarget, { text: `Your document is ready:\n${docUrl}` }, token);
+  await moveLinearIssueToType(config.linearApiKey, config.linearTeamId, issue.id, 'completed');
+  return { text: `✅ Sent ${issue.identifier} to the client and marked it Done.` };
+}
+
+function parseStagedMeta(description: string, key: string): string | undefined {
+  const line = description.split('\n').find((entry) => entry.trim().startsWith(`${key}:`));
+  return line ? line.slice(line.indexOf(':') + 1).trim() : undefined;
 }
 
 async function dispatchTask(instruction: string, source: LineSource | undefined, groupId: string | undefined, runtime: LineWebhookRuntime): Promise<BotReply> {
@@ -161,9 +212,12 @@ function helpReply(companyName: string): BotReply {
       '@tecxmate <what you want done>',
       '@tecxmate task 30 <request>  — use the last 30 messages as context',
       '',
-      'Status: @tecxmate status',
+      'When a draft is ready I message you. Then reply:',
+      'approve <id>  — send the doc to the client',
+      'discard <id>  — cancel it',
+      'pending       — list drafts awaiting approval',
       '',
-      'Documents are delivered back into this chat as a Drive link once ready.',
+      'Status: @tecxmate status',
     ].join('\n'),
   };
 }

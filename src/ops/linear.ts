@@ -95,6 +95,54 @@ export async function listOpenLinearIssues(apiKey: string, teamId?: string): Pro
   return (response.issues?.nodes ?? []).map(normalizeLinearIssue);
 }
 
+export type StagedIssue = {
+  id: string;
+  identifier: string;
+  title: string;
+  description: string;
+  stateType?: string;
+  attachments: Array<{ url: string; title?: string }>;
+};
+
+// Look up an issue by its identifier (e.g. TECX-26) within a team.
+export async function getLinearIssueByIdentifier(apiKey: string, teamId: string, identifier: string): Promise<StagedIssue | null> {
+  const num = Number(identifier.split('-').pop());
+  if (!Number.isFinite(num)) return null;
+  const response = await linearGraphql<{ issues?: { nodes?: Array<{ id: string; identifier: string; title: string; description?: string; state?: { type?: string }; attachments?: { nodes?: Array<{ url: string; title?: string }> } }> } }>(apiKey, `
+    query Issue($teamId: ID!, $num: Float!) {
+      issues(filter: { team: { id: { eq: $teamId } }, number: { eq: $num } }, first: 1) {
+        nodes { id identifier title description state { type } attachments { nodes { url title } } }
+      }
+    }
+  `, { teamId, num });
+  const node = response.issues?.nodes?.[0];
+  if (!node) return null;
+  return { id: node.id, identifier: node.identifier, title: node.title, description: node.description ?? '', stateType: node.state?.type, attachments: node.attachments?.nodes ?? [] };
+}
+
+// Move an issue to the team's first workflow state of the given type.
+export async function moveLinearIssueToType(apiKey: string, teamId: string, issueId: string, type: 'completed' | 'canceled'): Promise<void> {
+  const states = await linearGraphql<{ workflowStates?: { nodes?: Array<{ id: string; type: string; team?: { id: string } }> } }>(apiKey, `
+    query States { workflowStates(first: 250) { nodes { id type team { id } } } }
+  `, {});
+  const stateId = states.workflowStates?.nodes?.find((state) => state.team?.id === teamId && state.type === type)?.id;
+  if (!stateId) throw new Error(`No ${type} workflow state found for team`);
+  await linearGraphql(apiKey, `
+    mutation Move($id: String!, $stateId: String!) { issueUpdate(id: $id, input: { stateId: $stateId }) { success } }
+  `, { id: issueId, stateId });
+}
+
+export async function listLinearIssuesByStateName(apiKey: string, teamId: string, stateName: string): Promise<Array<{ identifier: string; title: string }>> {
+  const response = await linearGraphql<{ issues?: { nodes?: Array<{ identifier: string; title: string }> } }>(apiKey, `
+    query InState($teamId: ID!, $name: String!) {
+      issues(filter: { team: { id: { eq: $teamId } }, state: { name: { eq: $name } } }, first: 50) {
+        nodes { identifier title }
+      }
+    }
+  `, { teamId, name: stateName });
+  return response.issues?.nodes ?? [];
+}
+
 async function linearGraphql<T>(apiKey: string, query: string, variables: Record<string, unknown>): Promise<T> {
   const response = await fetch('https://api.linear.app/graphql', {
     method: 'POST',
