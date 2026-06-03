@@ -117,6 +117,8 @@ async function handleApproval(cmd: ApprovalCommand, runtime: LineWebhookRuntime)
 
   const issue = await getLinearIssueByIdentifier(config.linearApiKey, config.linearTeamId, cmd.id!);
   if (!issue) return { text: `I couldn't find ${cmd.id}.`, buttons: menuButtons() };
+  // Never act on tasks the bot didn't create (the team may hold human work).
+  if (!/source:\s*tecxmate-bot/i.test(issue.description)) return { text: `${issue.identifier} isn't one of my tasks.`, buttons: menuButtons() };
 
   if (cmd.action === 'discard' || cmd.action === 'end') {
     await moveLinearIssueToType(config.linearApiKey, config.linearTeamId, issue.id, 'canceled');

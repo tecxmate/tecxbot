@@ -147,15 +147,19 @@ export async function reviseLinearIssue(apiKey: string, teamId: string, issueId:
   `, { id: issueId, stateId, description });
 }
 
+// Returns issues in a state, scoped to tecxmate-bot tasks only (the team may also
+// hold unrelated human work — we must never list or touch that).
 export async function listLinearIssuesByStateName(apiKey: string, teamId: string, stateName: string): Promise<Array<{ identifier: string; title: string }>> {
-  const response = await linearGraphql<{ issues?: { nodes?: Array<{ identifier: string; title: string }> } }>(apiKey, `
+  const response = await linearGraphql<{ issues?: { nodes?: Array<{ identifier: string; title: string; description?: string }> } }>(apiKey, `
     query InState($teamId: ID!, $name: String!) {
       issues(filter: { team: { id: { eq: $teamId } }, state: { name: { eq: $name } } }, first: 50) {
-        nodes { identifier title }
+        nodes { identifier title description }
       }
     }
   `, { teamId, name: stateName });
-  return response.issues?.nodes ?? [];
+  return (response.issues?.nodes ?? [])
+    .filter((node) => /source:\s*tecxmate-bot/i.test(node.description ?? ''))
+    .map((node) => ({ identifier: node.identifier, title: node.title }));
 }
 
 async function linearGraphql<T>(apiKey: string, query: string, variables: Record<string, unknown>): Promise<T> {
