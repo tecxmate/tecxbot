@@ -26,7 +26,7 @@ export function isSqlConfigured() {
 }
 
 export async function sql<T = Record<string, unknown>>(query: string, params: unknown[] = []): Promise<T[]> {
-  const result = await post<SqlHttpResult>({ query, params });
+  const result = await post<SqlHttpResult>({ query, params: params.map(prepareParam) });
   return (result.rows ?? []) as T[];
 }
 
@@ -34,7 +34,36 @@ export async function sql<T = Record<string, unknown>>(query: string, params: un
 // start costs a single round trip instead of one per DDL statement.
 export async function sqlBatch(queries: SqlQuery[]): Promise<void> {
   if (!queries.length) return;
-  await post<SqlHttpBatchResult>({ queries: queries.map((item) => ({ query: item.query, params: item.params ?? [] })) });
+  await post<SqlHttpBatchResult>({ queries: queries.map((item) => ({ query: item.query, params: (item.params ?? []).map(prepareParam) })) });
+}
+
+// The Neon SQL-over-HTTP endpoint binds every parameter as text, exactly as the
+// Postgres wire protocol does — so a param must reach it in the string form
+// node-postgres would produce, not as raw JSON. This matters most for arrays:
+// `= any($1::text[])` needs a Postgres array literal (`{"a","b"}`), and a bare
+// JSON array (`["a","b"]`) does not bind. This mirrors node-postgres's
+// `prepareValue`, which the official driver runs on every parameter.
+export function prepareParam(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (Array.isArray(value)) return arrayLiteral(value);
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === 'bigint' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (typeof value === 'string') return value;
+  return JSON.stringify(value);
+}
+
+// Postgres array literal, e.g. ['a', 'b'] -> {"a","b"}. Elements are quoted and
+// escaped so commas, braces, and quotes inside a value survive; null elements
+// become the unquoted NULL keyword.
+function arrayLiteral(values: unknown[]): string {
+  const elements = values.map((element) => {
+    if (element === null || element === undefined) return 'NULL';
+    if (Array.isArray(element)) return arrayLiteral(element);
+    const text = prepareParam(element);
+    if (text === null) return 'NULL';
+    return `"${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+  });
+  return `{${elements.join(',')}}`;
 }
 
 async function post<T>(body: Record<string, unknown>): Promise<T> {

@@ -13,6 +13,10 @@
 // Must be set before the first import: tenantStore reads env at module load.
 process.env.WHATSAPP_PHONE_NUMBER_ID = '123456';
 process.env.DEFAULT_TENANT_ID = 'demo';
+// Most meta-webhook cases send unsigned payloads for convenience; the endpoint
+// fails closed on those unless this dev opt-in is set. A dedicated test toggles
+// it off to verify the fail-closed path.
+process.env.META_ALLOW_UNSIGNED = 'true';
 delete process.env.CONNECTOR_DATABASE_URL;
 delete process.env.DATABASE_URL;
 delete process.env.CONNECTOR_TIMEZONE;
@@ -26,7 +30,7 @@ const { recordMessage, buildConversationId } = await import(`${DIST}/src/core/co
 const { handleMcpMessage } = await import(`${DIST}/src/connector/mcpServer.js`);
 const { handleWhatsappWebhook } = await import(`${DIST}/src/platforms/whatsapp/webhook.js`);
 const { authorizeConnector } = await import(`${DIST}/src/connector/auth.js`);
-const { resolveSqlEndpoint } = await import(`${DIST}/src/core/sql.js`);
+const { resolveSqlEndpoint, prepareParam } = await import(`${DIST}/src/core/sql.js`);
 const { parseSince } = await import(`${DIST}/src/connector/tools.js`);
 const mcpEndpoint = (await import(`${DIST}/api/mcp.js`)).default;
 const metaEndpoint = (await import(`${DIST}/api/facebook-webhook.js`)).default;
@@ -435,6 +439,19 @@ await test('malformed JSON is rejected before any signature work', async () => {
   assertEqual((await rawHttpCall(metaEndpoint, { rawBody: '{oops' })).code, 400, 'status');
 });
 
+await test('an unsigned payload fails closed when no secret is configured', async () => {
+  // No app secret, and the dev opt-in off: the webhook must reject rather than
+  // dispatch a forged payload it cannot verify.
+  delete process.env.FB_APP_SECRET;
+  delete process.env.WHATSAPP_APP_SECRET;
+  process.env.META_ALLOW_UNSIGNED = 'false';
+  const rejected = await rawHttpCall(metaEndpoint, { rawBody: whatsappPayload('wamid.failclosed') });
+  assertEqual(rejected.code, 401, 'unsigned + no secret is rejected');
+  const messenger = await rawHttpCall(metaEndpoint, { rawBody: JSON.stringify({ object: 'page', entry: [] }) });
+  assertEqual(messenger.code, 401, 'messenger path fails closed too');
+  process.env.META_ALLOW_UNSIGNED = 'true'; // restore for later cases
+});
+
 console.log('\ncron dispatcher');
 
 await test('an unknown or missing job is a 400 that names the valid jobs', async () => {
@@ -491,6 +508,23 @@ await test('resolveSqlEndpoint derives the HTTP endpoint from the connection str
     'https://api.eu-central-1.aws.neon.tech/sql',
     'pooler host',
   );
+});
+
+await test('prepareParam encodes params the way the Neon HTTP endpoint binds them', async () => {
+  // Arrays must become Postgres array literals, or `= any($1::text[])` never
+  // matches — this is the bug the encoder exists to prevent.
+  assertEqual(prepareParam(['line:a', 'line:b']), '{"line:a","line:b"}', 'string array literal');
+  assertEqual(prepareParam([]), '{}', 'empty array');
+  // Elements with quotes, backslashes, or commas survive intact.
+  assertEqual(prepareParam(['a,b', 'c"d', 'e\\f']), '{"a,b","c\\"d","e\\\\f"}', 'escaped elements');
+  assertEqual(prepareParam([null, 'x']), '{NULL,"x"}', 'null element keyword');
+  // Scalars are stringified, as node-postgres does, so text binds accept them.
+  assertEqual(prepareParam(20), '20', 'number to string');
+  assertEqual(prepareParam(1699999999999), '1699999999999', 'bigint-range number');
+  assertEqual(prepareParam(true), 'true', 'boolean to string');
+  assertEqual(prepareParam(null), null, 'null stays null');
+  assertEqual(prepareParam(undefined), null, 'undefined becomes null');
+  assertEqual(prepareParam('plain'), 'plain', 'string passthrough');
 });
 
 // ---- result ----

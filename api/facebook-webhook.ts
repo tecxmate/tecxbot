@@ -39,6 +39,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!signature || !verifyMetaSignature(rawBody, signature, appSecret)) {
       return res.status(401).json({ error: 'Invalid Meta signature' });
     }
+  } else if (!allowUnsigned()) {
+    // Fail closed: an unsigned webhook that no secret can verify is rejected
+    // rather than dispatched. Set META_ALLOW_UNSIGNED=true only for local
+    // testing without a configured app secret.
+    console.error(`[meta-webhook] Rejected ${product} webhook: no app secret configured. Set FB_APP_SECRET / WHATSAPP_APP_SECRET, or META_ALLOW_UNSIGNED=true for local testing.`);
+    return res.status(401).json({ error: 'Webhook signature verification is not configured' });
   }
 
   try {
@@ -57,6 +63,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
 function resolveProduct(payload: { object?: string }): MetaProduct {
   return payload.object === 'whatsapp_business_account' ? 'whatsapp' : 'messenger';
+}
+
+function allowUnsigned() {
+  return process.env.META_ALLOW_UNSIGNED === 'true';
 }
 
 // One Meta app serving both products signs with a single secret, so WhatsApp

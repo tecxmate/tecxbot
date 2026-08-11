@@ -144,9 +144,11 @@ channel rather than a second endpoint. As with LINE, an explicit
 
 If one Meta app serves both Messenger and WhatsApp, they share a signing secret
 and `WHATSAPP_APP_SECRET` can be left unset — the webhook falls back to
-`FB_APP_SECRET`. If neither is set the signature check is skipped entirely,
-which is convenient while wiring things up but should be fixed before pointing
-a real number at the endpoint.
+`FB_APP_SECRET`. If neither is set the webhook **fails closed**: unsigned posts
+are rejected with 401 rather than dispatched, so a public endpoint cannot be fed
+forged client messages. For local testing without a configured secret, set
+`META_ALLOW_UNSIGNED=true` to opt back into accepting unsigned payloads — never
+in production.
 
 ## 7. Endpoint layout
 
