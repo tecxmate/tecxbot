@@ -1,6 +1,5 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "comment": "Rewrites, not functions: three endpoints were merged into two to stay under the Hobby plan's 12-function cap, and these keep the original URLs working so already-configured webhooks and schedulers need no change.",
   "rewrites": [
     { "source": "/api/whatsapp-webhook", "destination": "/api/facebook-webhook" },
     { "source": "/api/line-reminders", "destination": "/api/cron?job=line-reminders" },
