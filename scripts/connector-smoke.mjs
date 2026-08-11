@@ -26,7 +26,7 @@ delete process.env.CONNECTOR_TIMEZONE;
 const { resolve } = await import('node:path');
 const { pathToFileURL } = await import('node:url');
 const DIST = pathToFileURL(resolve(process.env.SMOKE_DIST || 'dist')).href;
-const { recordMessage, buildConversationId } = await import(`${DIST}/src/core/conversationStore.js`);
+const { recordMessage, buildConversationId, pruneOlderThan } = await import(`${DIST}/src/core/conversationStore.js`);
 const { handleMcpMessage } = await import(`${DIST}/src/connector/mcpServer.js`);
 const { handleWhatsappWebhook } = await import(`${DIST}/src/platforms/whatsapp/webhook.js`);
 const { authorizeConnector } = await import(`${DIST}/src/connector/auth.js`);
@@ -525,6 +525,57 @@ await test('prepareParam encodes params the way the Neon HTTP endpoint binds the
   assertEqual(prepareParam(null), null, 'null stays null');
   assertEqual(prepareParam(undefined), null, 'undefined becomes null');
   assertEqual(prepareParam('plain'), 'plain', 'string passthrough');
+});
+
+// ---- retention ----
+// Runs last: pruning mutates the shared store, so it uses its own throwaway
+// conversations and asserts against them rather than the earlier fixtures.
+
+console.log('\nretention');
+
+await test('pruneOlderThan drops aged messages but keeps recently active chats', async () => {
+  const record = (externalId, text, ageMs, id) => recordMessage({
+    tenantId: 'demo', channelId: 'tecxmate', platform: 'line', conversationType: 'group',
+    externalConversationId: externalId, title: externalId, direction: 'inbound',
+    senderId: 'U_p', senderName: 'Pruney', text, externalMessageId: id, at: now - ageMs,
+  });
+  const day = 86_400_000;
+  // Mixed conversation: one message 200 days old, one 1 day old.
+  await record('C_prune_mixed', 'ancient', 200 * day, 'p-old');
+  await record('C_prune_mixed', 'recent', 1 * day, 'p-new');
+  // Fully stale conversation: every message older than the cutoff.
+  await record('C_prune_stale', 'gone-1', 200 * day, 'p-s1');
+  await record('C_prune_stale', 'gone-2', 190 * day, 'p-s2');
+
+  const result = await pruneOlderThan(now - 90 * day);
+  assert(result.messagesDeleted >= 3, `deleted the three aged messages (got ${result.messagesDeleted})`);
+  assert(result.conversationsDeleted >= 1, 'removed the fully-stale conversation');
+
+  const mixed = await getConversationById('line:tecxmate:group:C_prune_mixed');
+  assertEqual(mixed.structuredContent.found, true, 'active conversation survives');
+  assertEqual(mixed.structuredContent.messages.length, 1, 'only the recent message remains');
+  assertEqual(mixed.structuredContent.messages[0].text, 'recent', 'the surviving message is the recent one');
+
+  const stale = await getConversationById('line:tecxmate:group:C_prune_stale');
+  assertEqual(stale.structuredContent.found, false, 'fully-stale conversation is gone');
+});
+
+async function getConversationById(id) {
+  return callTool('get_conversation', { conversation_id: id });
+}
+
+await test('connector-prune cron job reports a skip on the in-memory backend', async () => {
+  process.env.CRON_SECRET = 'cron-secret';
+  const response = await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'connector-prune', secret: 'cron-secret', days: '30' } });
+  assertEqual(response.code, 200, 'status');
+  assertEqual(response.body.ok, true, 'ok');
+  assertIncludes(response.body.skipped, 'in-memory', 'explains why nothing was pruned');
+});
+
+await test('connector-prune honours a disabling ?days=0', async () => {
+  const response = await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'connector-prune', secret: 'cron-secret', days: '0' } });
+  assertEqual(response.code, 200, 'status');
+  assertIncludes(response.body.skipped, 'disabled', 'retention disabled message');
 });
 
 // ---- result ----

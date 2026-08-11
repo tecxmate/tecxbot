@@ -48,6 +48,20 @@ than serving client chat to anyone who finds the URL. Generate one with:
 openssl rand -hex 32
 ```
 
+### Retention
+
+Captured history grows without bound unless you prune it. A cron job deletes
+messages older than `CONNECTOR_RETENTION_DAYS` (default 90; `0` disables), then
+removes any conversation left with no messages:
+
+```text
+GET /api/cron?job=connector-prune&secret=<CRON_SECRET>
+```
+
+Schedule it daily. `?days=<n>` overrides the retention window for a one-off
+sweep. On the in-memory store the job is a no-op (that store self-evicts and is
+per-instance), and it says so in the response.
+
 ## 3. Connect Claude
 
 Claude Code:
@@ -161,6 +175,7 @@ alive. Nothing configured in a dashboard or scheduler needs to change.
 | `/api/whatsapp-webhook` | `api/facebook-webhook.ts` | Same Meta webhook protocol; routed by the payload's `object` field |
 | `/api/line-reminders` | `api/cron.ts?job=line-reminders` | |
 | `/api/ops-daily-report` | `api/cron.ts?job=ops-daily-report` | |
+| (schedule directly) | `api/cron.ts?job=connector-prune` | Retention sweep; no legacy URL |
 
 ## 8. A note on trust
 

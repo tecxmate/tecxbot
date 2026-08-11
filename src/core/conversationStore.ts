@@ -158,6 +158,17 @@ export async function getStats(tenantId?: string): Promise<StoreStats> {
   }
 }
 
+export type PruneResult = { messagesDeleted: number; conversationsDeleted: number };
+
+/**
+ * Delete messages older than `cutoffMs`, then remove any conversation left with
+ * no messages. Keeps the log bounded so it doesn't grow without limit. A
+ * conversation with any message newer than the cutoff is untouched.
+ */
+export async function pruneOlderThan(cutoffMs: number): Promise<PruneResult> {
+  return driver().prune(cutoffMs);
+}
+
 // ---- normalization ----
 
 type ConversationRow = Omit<ConversationSummary, 'messageCount' | 'participants'>;
@@ -212,6 +223,7 @@ type Driver = {
   getMessages(query: MessagesQuery): Promise<StoredMessage[]>;
   searchMessages(query: SearchQuery): Promise<StoredMessage[]>;
   stats(tenantId?: string): Promise<StoreStats>;
+  prune(cutoffMs: number): Promise<PruneResult>;
 };
 
 function driver(): Driver {
@@ -282,6 +294,23 @@ const memoryDriver: Driver = {
     const messages = conversations.reduce((total, row) => total + (memoryMessages.get(row.conversationId)?.length ?? 0), 0);
     const lastMessageAt = conversations.reduce((latest, row) => Math.max(latest, row.lastMessageAt), 0);
     return { backend: 'memory', durable: false, conversations: conversations.length, messages, lastMessageAt: lastMessageAt || undefined };
+  },
+
+  async prune(cutoffMs) {
+    let messagesDeleted = 0;
+    let conversationsDeleted = 0;
+    for (const [conversationId, messages] of memoryMessages.entries()) {
+      const kept = messages.filter((message) => message.at >= cutoffMs);
+      messagesDeleted += messages.length - kept.length;
+      if (kept.length) {
+        memoryMessages.set(conversationId, kept);
+      } else {
+        memoryMessages.delete(conversationId);
+        memoryConversations.delete(conversationId);
+        conversationsDeleted += 1;
+      }
+    }
+    return { messagesDeleted, conversationsDeleted };
   },
 };
 
@@ -510,6 +539,24 @@ const postgresDriver: Driver = {
       messages: toNumber(row.messages),
       lastMessageAt: toNumber(row.last_message_at) || undefined,
     };
+  },
+
+  async prune(cutoffMs) {
+    await ensureSchema();
+    // `returning` counts rows without a second scan. The conversation sweep
+    // removes only rows with no messages left, so a chat with any recent
+    // activity is preserved even if some of its messages aged out.
+    const deletedMessages = await sql<Record<string, unknown>>(
+      `delete from connector_messages where at_ms < $1 returning id`,
+      [cutoffMs],
+    );
+    const deletedConversations = await sql<Record<string, unknown>>(
+      `delete from connector_conversations c
+        where not exists (select 1 from connector_messages m where m.conversation_id = c.conversation_id)
+        returning conversation_id`,
+      [],
+    );
+    return { messagesDeleted: deletedMessages.length, conversationsDeleted: deletedConversations.length };
   },
 };
 

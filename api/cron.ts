@@ -11,16 +11,20 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { buildWatchlistBrief } from '../src/botSystems/mcpBrief.js';
 import { buildDailyOpsReport } from '../src/ops/companyOps.js';
 import { getOpsConfig } from '../src/ops/config.js';
+import { pruneOlderThan, storeBackend } from '../src/core/conversationStore.js';
 import { getDueBriefReminders, markBriefReminderSent } from '../src/core/personalProfileStore.js';
 import { resolveTenantChannel } from '../src/core/tenantStore.js';
 import { sendFacebookUpdate } from '../src/platforms/facebook/client.js';
 import { pushLineMessage } from '../src/platforms/line/client.js';
 
-// The reminder sweep is the slow one; it sets the ceiling for both jobs.
+// The reminder sweep is the slow one; it sets the ceiling for all jobs.
 export const config = { maxDuration: 300 };
 
-const JOBS = ['line-reminders', 'ops-daily-report'] as const;
+const JOBS = ['line-reminders', 'ops-daily-report', 'connector-prune'] as const;
 type Job = (typeof JOBS)[number];
+
+const DEFAULT_RETENTION_DAYS = 90;
+const MS_PER_DAY = 86_400_000;
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
@@ -32,7 +36,37 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   if (job === 'line-reminders') return runLineReminders(req, res);
+  if (job === 'connector-prune') return runConnectorPrune(req, res);
   return runOpsDailyReport(req, res);
+}
+
+async function runConnectorPrune(req: VercelRequest, res: VercelResponse) {
+  // `?days=` overrides CONNECTOR_RETENTION_DAYS for a one-off sweep; 0 disables.
+  const days = resolveRetentionDays(firstQueryValue(req.query.days));
+  if (days <= 0) {
+    return res.status(200).json({ ok: true, job: 'connector-prune', skipped: 'retention disabled (set CONNECTOR_RETENTION_DAYS or ?days=)' });
+  }
+  if (storeBackend() !== 'postgres') {
+    // The in-memory store is per-instance and already self-evicts, so there is
+    // nothing durable to prune — say so rather than silently no-op.
+    return res.status(200).json({ ok: true, job: 'connector-prune', skipped: 'in-memory store: nothing durable to prune', retentionDays: days });
+  }
+  try {
+    const cutoff = Date.now() - days * MS_PER_DAY;
+    const result = await pruneOlderThan(cutoff);
+    return res.status(200).json({ ok: true, job: 'connector-prune', retentionDays: days, cutoff, ...result });
+  } catch (error) {
+    console.error('[cron:connector-prune] Failed:', error);
+    return res.status(500).json({ ok: false, job: 'connector-prune', error: formatError(error) });
+  }
+}
+
+function resolveRetentionDays(override: string | undefined): number {
+  const raw = override ?? process.env.CONNECTOR_RETENTION_DAYS;
+  if (raw === undefined || raw === '') return DEFAULT_RETENTION_DAYS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_RETENTION_DAYS;
+  return Math.floor(parsed);
 }
 
 async function runLineReminders(req: VercelRequest, res: VercelResponse) {

@@ -51,8 +51,12 @@ create unique index if not exists connector_messages_external_idx
   on connector_messages (conversation_id, external_message_id)
   where external_message_id is not null;
 
--- Optional retention. Nothing deletes on its own; run this on a schedule if you
--- only want to keep a rolling window of client chat.
+-- Retention. The `connector-prune` cron job does this for you on a schedule
+-- (GET /api/cron?job=connector-prune), deleting messages older than
+-- CONNECTOR_RETENTION_DAYS and then any conversation left empty. To run it by
+-- hand instead:
 --
 --   delete from connector_messages
 --    where at_ms < (extract(epoch from now()) * 1000)::bigint - (90 * 86400000);
+--   delete from connector_conversations c
+--    where not exists (select 1 from connector_messages m where m.conversation_id = c.conversation_id);
