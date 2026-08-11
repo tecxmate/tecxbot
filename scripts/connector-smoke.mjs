@@ -527,6 +527,22 @@ await test('prepareParam encodes params the way the Neon HTTP endpoint binds the
   assertEqual(prepareParam('plain'), 'plain', 'string passthrough');
 });
 
+await test('CONNECTOR_TENANT_ID pins the connector to one tenant, overriding the caller', async () => {
+  // Pinned to the tenant that owns the seeded data: a caller asking for a
+  // different tenant is ignored and still sees the pinned tenant's chats.
+  process.env.CONNECTOR_TENANT_ID = 'demo';
+  const asDemo = await callTool('latest_context', { tenant_id: 'someone-else' });
+  assert(asDemo.structuredContent.conversations.length > 0, 'pinned tenant data is returned regardless of the requested tenant');
+
+  // Pinned to a tenant with no data: even asking for the real tenant returns
+  // nothing, so a token cannot reach across tenants on a shared database.
+  process.env.CONNECTOR_TENANT_ID = 'ghost-tenant';
+  const asGhost = await callTool('latest_context', { tenant_id: 'demo' });
+  assertEqual(asGhost.structuredContent.conversations.length, 0, 'no cross-tenant read when pinned elsewhere');
+
+  delete process.env.CONNECTOR_TENANT_ID;
+});
+
 // ---- retention ----
 // Runs last: pruning mutates the shared store, so it uses its own throwaway
 // conversations and asserts against them rather than the earlier fixtures.

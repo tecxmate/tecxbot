@@ -48,6 +48,16 @@ than serving client chat to anyone who finds the URL. Generate one with:
 openssl rand -hex 32
 ```
 
+### Multi-tenant
+
+For a single-owner deployment, leave `CONNECTOR_TENANT_ID` unset — the connector
+serves that deployment's captured chat.
+
+If several businesses share one database, run one connector deployment per tenant
+and set `CONNECTOR_TENANT_ID` on each. The token is then pinned to that tenant:
+the `tenant_id` a caller passes is ignored, so a leaked token cannot read another
+tenant's conversations by asking for a different id.
+
 ### Retention
 
 Captured history grows without bound unless you prune it. A cron job deletes

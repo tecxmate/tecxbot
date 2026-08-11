@@ -43,8 +43,18 @@ const sinceProperty = {
 
 const tenantProperty = {
   type: 'string',
-  description: 'Optional tenant id, for deployments hosting more than one business.',
+  description: 'Optional tenant id, for deployments hosting more than one business. Ignored when the deployment is pinned to a single tenant.',
 };
+
+// When CONNECTOR_TENANT_ID is set, the deployment is pinned to one tenant and
+// the caller-supplied tenant_id is ignored — so a token on a shared database
+// cannot read another tenant's conversations by asking for a different id.
+// Unset (the common single-owner case) leaves the caller's value untouched.
+function enforcedTenant(argValue: unknown): string | undefined {
+  const pinned = process.env.CONNECTOR_TENANT_ID?.trim();
+  if (pinned) return pinned;
+  return readString(argValue);
+}
 
 export const connectorTools: ToolDefinition[] = [
   {
@@ -65,7 +75,7 @@ export const connectorTools: ToolDefinition[] = [
     },
     async handler(args) {
       const platform = readPlatform(args.platform);
-      const tenantId = readString(args.tenant_id);
+      const tenantId = enforcedTenant(args.tenant_id);
       const since = parseSince(readString(args.since), '7d');
       const conversationLimit = readInt(args.conversations, 5, 1, 20);
       const perConversation = readInt(args.messages_per_conversation, 20, 1, 100);
@@ -121,7 +131,7 @@ export const connectorTools: ToolDefinition[] = [
     async handler(args) {
       const platform = readPlatform(args.platform);
       const conversations = await listConversations({
-        tenantId: readString(args.tenant_id),
+        tenantId: enforcedTenant(args.tenant_id),
         platform,
         since: parseSince(readString(args.since), '30d'),
         query: readString(args.query),
@@ -157,7 +167,7 @@ export const connectorTools: ToolDefinition[] = [
     async handler(args) {
       const conversationId = readString(args.conversation_id);
       if (!conversationId) throw new Error('conversation_id is required.');
-      const tenantId = readString(args.tenant_id);
+      const tenantId = enforcedTenant(args.tenant_id);
       const conversation = await getConversation(conversationId, tenantId);
       if (!conversation) {
         return {
@@ -200,7 +210,7 @@ export const connectorTools: ToolDefinition[] = [
       if (!query) throw new Error('query is required.');
       const matches = await searchMessages({
         query,
-        tenantId: readString(args.tenant_id),
+        tenantId: enforcedTenant(args.tenant_id),
         platform: readPlatform(args.platform),
         conversationId: readString(args.conversation_id),
         since: parseSince(readString(args.since)),
@@ -223,7 +233,7 @@ export const connectorTools: ToolDefinition[] = [
     description: 'Report how the connector is wired up: storage backend, whether capture is on, which LINE and WhatsApp channels are configured, and how much history has been captured. Use it when a tool returns nothing to tell a setup problem apart from a genuinely quiet inbox.',
     inputSchema: { type: 'object', properties: { tenant_id: tenantProperty }, additionalProperties: false },
     async handler(args) {
-      const stats = await getStats(readString(args.tenant_id));
+      const stats = await getStats(enforcedTenant(args.tenant_id));
       const channels = listConnectorChannels();
       const lines = [
         '# Tecxbot connector status',
