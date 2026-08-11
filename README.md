@@ -139,7 +139,7 @@ FB_BOT_MENTION_NAMES=tecxbot,tecxmate
 OPS_REPO_ALIASES=corp=tecxmate/tecxcorp,bot=tecxmate/tecxbot
 OPS_GITHUB_DEFAULT_ASSIGNEES=github-user
 OPS_GITHUB_LABELS=ops-task,from-messenger
-OPS_TEAM_DIRECTORY_FILE=/Users/niko/antigravity/tecxcorp/ops/task_owner_contacts.csv
+OPS_TEAM_DIRECTORY_FILE=/absolute/path/to/tecxcorp/ops/task_owner_contacts.csv
 LINEAR_PROJECT_ID=
 LINEAR_LABEL_IDS=
 LINEAR_DEFAULT_ASSIGNEE_ID=
@@ -151,7 +151,7 @@ extra columns when you add them:
 
 ```csv
 task_owner,full_name,position,github_login,linear_user_id,aliases,channel,recipient_id,active
-brian,Brian Doan,CTO,briandoan,linear-user-uuid,"brian|cto",messenger,PSID,yes
+alex,Alex Rivera,CTO,alex-rivera,linear-user-uuid,"alex|cto",messenger,PSID,yes
 ```
 
 The intake prompt uses this directory to resolve human names, roles, and
