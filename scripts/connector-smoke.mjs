@@ -29,6 +29,9 @@ const { authorizeConnector } = await import(`${DIST}/src/connector/auth.js`);
 const { resolveSqlEndpoint } = await import(`${DIST}/src/core/sql.js`);
 const { parseSince } = await import(`${DIST}/src/connector/tools.js`);
 const mcpEndpoint = (await import(`${DIST}/api/mcp.js`)).default;
+const metaEndpoint = (await import(`${DIST}/api/facebook-webhook.js`)).default;
+const cronEndpoint = (await import(`${DIST}/api/cron.js`)).default;
+const { createHmac } = await import('node:crypto');
 
 // ---- harness ----
 
@@ -109,6 +112,26 @@ async function httpCall({ method = 'POST', headers = {}, query = {}, body } = {}
 }
 
 const jsonRpc = (method, params, id = 1) => ({ jsonrpc: '2.0', id, method, params });
+
+// Endpoints declaring `bodyParser: false` read the request as a stream, so the
+// fake request has to be async-iterable rather than carrying a parsed body.
+async function rawHttpCall(endpoint, { method = 'POST', headers = {}, query = {}, rawBody = '' } = {}) {
+  const state = { code: 0, headers: {}, body: undefined };
+  const res = {
+    setHeader: (key, value) => { state.headers[key.toLowerCase()] = value; },
+    status(code) { state.code = code; return res; },
+    json(payload) { state.body = payload; return res; },
+    send(payload) { state.body = payload; return res; },
+    end() { return res; },
+  };
+  const req = { method, headers, query, async *[Symbol.asyncIterator]() { yield rawBody; } };
+  await endpoint(req, res);
+  return state;
+}
+
+function signMeta(rawBody, secret) {
+  return `sha256=${createHmac('sha256', secret).update(rawBody).digest('hex')}`;
+}
 
 // ---- storage ----
 
@@ -341,6 +364,108 @@ await test('malformed JSON is a parse error', async () => {
 await test('GET and DELETE behave', async () => {
   assertEqual((await httpCall({ method: 'GET', headers: AUTH })).code, 405, 'GET is not an SSE stream');
   assertEqual((await httpCall({ method: 'DELETE', headers: AUTH })).code, 204, 'DELETE is a no-op teardown');
+});
+
+// ---- merged endpoints ----
+// Messenger and WhatsApp share one Meta function, and the scheduled jobs share
+// one cron function, to stay under Vercel's Hobby function cap. These check the
+// routing that consolidation introduced.
+
+console.log('\nmeta webhook (messenger + whatsapp)');
+
+const whatsappPayload = (id) => JSON.stringify({
+  object: 'whatsapp_business_account',
+  entry: [{ changes: [{ field: 'messages', value: {
+    metadata: { phone_number_id: '123456' },
+    contacts: [{ wa_id: '886900111222', profile: { name: 'Routing Test' } }],
+    messages: [{ id, from: '886900111222', timestamp: String(Math.floor(now / 1000)), type: 'text', text: { body: 'routed through the meta webhook' } }],
+  } }] }],
+});
+
+await test('hub verification accepts either product\'s verify token', async () => {
+  process.env.FB_VERIFY_TOKEN = 'fb-token';
+  process.env.WHATSAPP_VERIFY_TOKEN = 'wa-token';
+  for (const token of ['fb-token', 'wa-token']) {
+    const response = await rawHttpCall(metaEndpoint, { method: 'GET', query: { 'hub.mode': 'subscribe', 'hub.verify_token': token, 'hub.challenge': 'echo-me' } });
+    assertEqual(response.code, 200, `status for ${token}`);
+    assertEqual(response.body, 'echo-me', `challenge echoed for ${token}`);
+  }
+  const bad = await rawHttpCall(metaEndpoint, { method: 'GET', query: { 'hub.mode': 'subscribe', 'hub.verify_token': 'nope', 'hub.challenge': 'x' } });
+  assertEqual(bad.code, 403, 'wrong token rejected');
+});
+
+await test('a whatsapp payload routes to whatsapp ingest', async () => {
+  delete process.env.FB_APP_SECRET;
+  delete process.env.WHATSAPP_APP_SECRET;
+  const response = await rawHttpCall(metaEndpoint, { rawBody: whatsappPayload('wamid.routed') });
+  assertEqual(response.code, 200, 'status');
+  assertEqual(response.body.product, 'whatsapp', 'routed product');
+  assertEqual(response.body.captured, 1, 'captured count');
+  const search = await callTool('search_messages', { query: 'routed through the meta webhook' });
+  assertEqual(search.structuredContent.matches.length, 1, 'message reached the store');
+});
+
+await test('a messenger payload routes to the messenger handler', async () => {
+  const response = await rawHttpCall(metaEndpoint, { rawBody: JSON.stringify({ object: 'page', entry: [] }) });
+  assertEqual(response.code, 200, 'status');
+  assertEqual(response.body.product, 'messenger', 'routed product');
+});
+
+await test('a bad signature is rejected when an app secret is configured', async () => {
+  process.env.WHATSAPP_APP_SECRET = 'wa-secret';
+  const body = whatsappPayload('wamid.signed');
+  const bad = await rawHttpCall(metaEndpoint, { headers: { 'x-hub-signature-256': signMeta(body, 'wrong-secret') }, rawBody: body });
+  assertEqual(bad.code, 401, 'wrong signature');
+  const missing = await rawHttpCall(metaEndpoint, { rawBody: body });
+  assertEqual(missing.code, 401, 'absent signature');
+  const good = await rawHttpCall(metaEndpoint, { headers: { 'x-hub-signature-256': signMeta(body, 'wa-secret') }, rawBody: body });
+  assertEqual(good.code, 200, 'correct signature');
+  delete process.env.WHATSAPP_APP_SECRET;
+});
+
+await test('whatsapp falls back to the messenger secret when one app serves both', async () => {
+  process.env.FB_APP_SECRET = 'shared-secret';
+  const body = whatsappPayload('wamid.shared');
+  const good = await rawHttpCall(metaEndpoint, { headers: { 'x-hub-signature-256': signMeta(body, 'shared-secret') }, rawBody: body });
+  assertEqual(good.code, 200, 'shared secret accepted');
+  delete process.env.FB_APP_SECRET;
+});
+
+await test('malformed JSON is rejected before any signature work', async () => {
+  assertEqual((await rawHttpCall(metaEndpoint, { rawBody: '{oops' })).code, 400, 'status');
+});
+
+console.log('\ncron dispatcher');
+
+await test('an unknown or missing job is a 400 that names the valid jobs', async () => {
+  process.env.CRON_SECRET = 'cron-secret';
+  const unknown = await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'nope', secret: 'cron-secret' } });
+  assertEqual(unknown.code, 400, 'unknown job status');
+  assertIncludes(unknown.body.error, 'line-reminders', 'lists valid jobs');
+  assertEqual((await rawHttpCall(cronEndpoint, { method: 'GET', query: { secret: 'cron-secret' } })).code, 400, 'missing job');
+});
+
+await test('the cron secret is required, via header or query', async () => {
+  assertEqual((await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'line-reminders' } })).code, 401, 'no credentials');
+  assertEqual((await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'line-reminders', secret: 'wrong' } })).code, 401, 'wrong secret');
+  assertEqual((await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'line-reminders', secret: 'cron-secret' } })).code, 200, 'query secret');
+  assertEqual((await rawHttpCall(cronEndpoint, { method: 'GET', headers: { authorization: 'Bearer cron-secret' }, query: { job: 'line-reminders' } })).code, 200, 'bearer header');
+});
+
+await test('the line-reminders job runs and reports what was due', async () => {
+  const response = await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'line-reminders', secret: 'cron-secret' } });
+  assertEqual(response.body.ok, true, 'ok');
+  assertEqual(response.body.job, 'line-reminders', 'job name echoed');
+  assertEqual(response.body.due, 0, 'nothing due with no profiles configured');
+});
+
+await test('an unconfigured deployment closes the cron endpoint in production', async () => {
+  delete process.env.CRON_SECRET;
+  process.env.VERCEL_ENV = 'production';
+  assertEqual((await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'line-reminders' } })).code, 401, 'production without a secret');
+  process.env.VERCEL_ENV = 'preview';
+  assertEqual((await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'line-reminders' } })).code, 200, 'preview without a secret');
+  delete process.env.VERCEL_ENV;
 });
 
 // ---- units ----

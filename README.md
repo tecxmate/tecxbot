@@ -86,6 +86,10 @@ WhatsApp is capture-only and routes by `phone_number_id`:
 https://your-domain.vercel.app/api/whatsapp-webhook
 ```
 
+Messenger and WhatsApp are served by the same function — they are the same Meta
+webhook protocol, and the payload's `object` field tells them apart — so that
+URL is a rewrite onto `/api/facebook-webhook`. Either address works.
+
 Full setup, including the Meta dashboard fields and what gets captured, is in
 `docs/claude-connector.md`.
 
@@ -172,8 +176,11 @@ protocol.
 Run this endpoint from Vercel Cron, GitHub Actions, or another scheduler:
 
 ```text
-GET /api/ops-daily-report?secret=<CRON_SECRET>
+GET /api/cron?job=ops-daily-report&secret=<CRON_SECRET>
 ```
+
+The former `/api/ops-daily-report` URL still works — `vercel.json` rewrites it
+here — so an existing schedule needs no change.
 
 It reads open Linear issues, open issues in `OPS_GITHUB_REPOS`, open Google
 Tasks, and asks Claude to summarize what is being worked on, what is slowing
@@ -259,7 +266,7 @@ Tecxstock is 1:1-only. In LINE groups it does not run stock commands; if someone
 
 Free-form text does not trigger open-ended LLM chat. In groups it is ignored; in 1:1 chat the bot returns deterministic command suggestions with clickable quick-reply chips. For example, `what about TSMC` suggests `/q 2330`, `/flow 2330 5d`, `/n 2330 7`, and `/watch 2330`.
 
-Scheduled reminders are delivered by `GET /api/line-reminders`. Run it every minute from Vercel Pro Cron, GitHub Actions, or another external scheduler. Set `CRON_SECRET` for protected manual invocation.
+Scheduled reminders are delivered by `GET /api/cron?job=line-reminders` (the former `/api/line-reminders` URL is rewritten here, so an existing schedule needs no change). Run it every minute from Vercel Pro Cron, GitHub Actions, or another external scheduler. Set `CRON_SECRET` for protected manual invocation.
 
 ## LINE group translation commands
 
