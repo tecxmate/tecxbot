@@ -25,6 +25,37 @@ export async function downloadLineMessageContent(messageId: string, accessToken?
   return { content: await response.arrayBuffer(), contentType: response.headers.get('content-type') ?? 'application/octet-stream' };
 }
 
+// Profile lookups used to label captured conversations with human names instead
+// of raw LINE ids. Every one of them is best-effort: a bot that has not been
+// added by the user, or a room with no summary endpoint, is a normal outcome —
+// never a reason to fail the webhook.
+export async function fetchLineDisplayName(input: { userId: string; groupId?: string; roomId?: string }, accessToken?: string) {
+  const path = input.groupId
+    ? `group/${encodeURIComponent(input.groupId)}/member/${encodeURIComponent(input.userId)}`
+    : input.roomId
+      ? `room/${encodeURIComponent(input.roomId)}/member/${encodeURIComponent(input.userId)}`
+      : `profile/${encodeURIComponent(input.userId)}`;
+  const profile = await getLineJson<{ displayName?: string }>(path, accessToken);
+  return profile?.displayName?.trim() || undefined;
+}
+
+export async function fetchLineGroupName(groupId: string, accessToken?: string) {
+  const summary = await getLineJson<{ groupName?: string }>(`group/${encodeURIComponent(groupId)}/summary`, accessToken);
+  return summary?.groupName?.trim() || undefined;
+}
+
+async function getLineJson<T>(path: string, accessToken?: string): Promise<T | undefined> {
+  const token = accessToken ?? process.env.LINE_CHANNEL_ACCESS_TOKEN;
+  if (!token) return undefined;
+  try {
+    const response = await fetch(`https://api.line.me/v2/bot/${path}`, { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) return undefined;
+    return await response.json() as T;
+  } catch {
+    return undefined;
+  }
+}
+
 export function mainMenuButtons(): ReplyButton[][] {
   return [[{ label: 'Help', data: 'menu:help' }, { label: 'Settings', data: 'menu:settings' }], [{ label: 'Status', text: '/status' }, { label: 'Languages', text: '/languages' }]];
 }

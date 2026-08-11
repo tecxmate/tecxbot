@@ -43,11 +43,22 @@ export type TenantChannelConfig = {
   label: string;
   botSystem: BotSystemConfig;
   line?: LineChannelConfig;
+  whatsapp?: WhatsappChannelConfig;
 };
 
 export type LineChannelConfig = {
   channelSecret: string;
   channelAccessToken: string;
+};
+
+// WhatsApp Business Platform (Meta Cloud API). The connector only needs to read
+// inbound traffic, so `accessToken` is optional — it is required to send.
+export type WhatsappChannelConfig = {
+  phoneNumberId: string;
+  accessToken?: string;
+  appSecret?: string;
+  verifyToken?: string;
+  displayPhoneNumber?: string;
 };
 
 export type TenantPlan = {

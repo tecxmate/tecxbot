@@ -38,6 +38,8 @@ Current scope:
 - OpenAI transcript polish
 - Rich menu setup script
 - Swappable MCP-backed bot runtime for command-driven domain bots
+- Claude connector (MCP server) serving LINE and WhatsApp client conversations
+- WhatsApp Business (Cloud API) webhook for conversation capture
 
 This intentionally does not port dental demo patients, clinic-specific CRM UI, Telegram command handlers, or one-clinic assumptions.
 
@@ -45,8 +47,47 @@ See docs/architecture.md.
 
 See also:
 
+- `docs/claude-connector.md`
 - `docs/multi-tenant-architecture.md`
 - `docs/neon-schema.sql`
+- `docs/connector-schema.sql`
+
+## Claude connector
+
+Tecxbot can hand Claude the context of your latest client conversations. LINE
+and WhatsApp traffic is captured into a durable conversation log, and `/api/mcp`
+exposes it as an MCP server, so a Claude session starts already knowing what
+each client last said.
+
+```bash
+claude mcp add --transport http tecxbot \
+  https://your-domain.vercel.app/api/mcp \
+  --header "Authorization: Bearer $CONNECTOR_TOKEN"
+```
+
+Required environment:
+
+```text
+CONNECTOR_TOKEN=<long random string>
+CONNECTOR_DATABASE_URL=postgresql://...
+```
+
+The endpoint fails closed — with no `CONNECTOR_TOKEN` it refuses every request.
+Without `CONNECTOR_DATABASE_URL` the log falls back to memory, which only holds
+what a single serverless instance captured since its last cold start.
+
+Read-only tools: `latest_context`, `list_conversations`, `get_conversation`,
+`search_messages`, `connector_status`. Nothing here sends messages or changes
+state on LINE or WhatsApp.
+
+WhatsApp is capture-only and routes by `phone_number_id`:
+
+```text
+https://your-domain.vercel.app/api/whatsapp-webhook
+```
+
+Full setup, including the Meta dashboard fields and what gets captured, is in
+`docs/claude-connector.md`.
 
 ## Messenger ops intake
 
