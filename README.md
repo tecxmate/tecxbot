@@ -89,6 +89,20 @@ https://your-domain.vercel.app/api/whatsapp-webhook
 Full setup, including the Meta dashboard fields and what gets captured, is in
 `docs/claude-connector.md`.
 
+## Checks
+
+```bash
+npm run build   # typecheck (tsc --noEmit)
+npm test        # connector smoke tests
+```
+
+`npm test` compiles to `dist/` and runs `scripts/connector-smoke.mjs`, which
+ingests LINE and WhatsApp messages into the in-memory store and then drives the
+MCP server over JSON-RPC exactly as a client would. It needs no database, no
+network, and no credentials.
+
+Both run on every push and pull request via `.github/workflows/ci.yml`.
+
 ## Messenger ops intake
 
 Tecxbot can act as the phone-friendly intake layer for the TecxCorp company OS.

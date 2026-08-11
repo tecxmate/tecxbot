@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json --noEmit false --outDir dist && node scripts/connector-smoke.mjs",
     "line:set-webhook": "node scripts/line-set-webhook.mjs",
     "line:set-rich-menu": "node scripts/line-set-rich-menu.mjs",
     "telegram:set-webhook": "node --env-file=.env scripts/telegram-set-webhook.mjs",
