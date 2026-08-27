@@ -110,7 +110,7 @@ curl -s https://your-domain.vercel.app/api/mcp \
 | `list_conversations` | Which client chats exist, ordered by recent activity, with a preview of the last message. |
 | `get_conversation` | The full transcript of one conversation. |
 | `search_messages` | "When did they mention the invoice?" across every captured conversation. |
-| `get_image` | Actually *see* an image a client sent on LINE. |
+| `get_image` | Actually *see* an image sent in a LINE conversation (by anyone in it). |
 | `connector_status` | Storage backend, capture state, configured channels, how much history exists. Use it when a tool returns nothing. |
 
 Time windows accept relative values (`24h`, `7d`, `2w`), an ISO date
