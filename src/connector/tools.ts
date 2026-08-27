@@ -16,9 +16,13 @@ import {
   type ConversationSummary,
   type StoredMessage,
 } from '../core/conversationStore.js';
-import { listConnectorChannels } from '../core/tenantStore.js';
+import { getTenantChannelConfig, listConnectorChannels } from '../core/tenantStore.js';
+import { downloadLineMessageContent } from '../platforms/line/client.js';
 
-export type ToolOutput = { text: string; structured: Record<string, unknown> };
+// A tool normally returns text; `content` lets it return richer MCP blocks
+// (e.g. an image), which the server uses in place of the wrapped text.
+export type ToolContentBlock = { type: string; [key: string]: unknown };
+export type ToolOutput = { text: string; structured: Record<string, unknown>; content?: ToolContentBlock[] };
 
 export type ToolDefinition = {
   name: string;
@@ -27,6 +31,11 @@ export type ToolDefinition = {
   inputSchema: Record<string, unknown>;
   handler: (args: Record<string, unknown>) => Promise<ToolOutput>;
 };
+
+// Inlining an image as base64 inflates the JSON-RPC response ~1.33x, and the
+// model has to ingest all of it — so cap what get_image will return.
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MEDIA_TYPES = new Set(['image', 'video', 'audio', 'file']);
 
 const PLATFORM_ENUM = ['line', 'whatsapp'];
 
@@ -252,7 +261,84 @@ export const connectorTools: ToolDefinition[] = [
       return { text: lines.join('\n'), structured: { ...stats, capture: isCaptureEnabled(), channels } };
     },
   },
+
+  {
+    name: 'get_image',
+    title: 'View an image a client sent',
+    description:
+      'Fetch and view an image message a client sent on LINE, so you can actually see it. Pass the conversation_id and the message\'s `mediaId` (shown on image messages in get_conversation / latest_context). The image is fetched live from LINE on demand — nothing is stored — so it works for recent images while LINE still retains the media.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        conversation_id: { type: 'string', description: 'The conversation the image was sent in.' },
+        message_id: { type: 'string', description: 'The image message\'s mediaId, from get_conversation / latest_context.' },
+        tenant_id: tenantProperty,
+      },
+      required: ['conversation_id', 'message_id'],
+      additionalProperties: false,
+    },
+    async handler(args) {
+      const conversationId = readString(args.conversation_id);
+      const messageId = readString(args.message_id);
+      if (!conversationId || !messageId) throw new Error('conversation_id and message_id are required.');
+      const tenantId = enforcedTenant(args.tenant_id);
+
+      const conversation = await getConversation(conversationId, tenantId);
+      if (!conversation) return imageError(`No conversation found with id "${conversationId}".`);
+      if (conversation.platform !== 'line') return imageError('Only LINE images can be fetched right now.');
+
+      // Confirm the id really belongs to this conversation and is inbound media —
+      // so this tool can only reach images a client actually sent here, not an
+      // arbitrary platform message id.
+      const messages = await getMessages({ conversationId, tenantId, limit: 1000 });
+      const target = messages.find((message) => message.externalMessageId === messageId && message.direction === 'inbound' && MEDIA_TYPES.has(message.messageType));
+      if (!target) return imageError(`No fetchable media with id "${messageId}" in this conversation. Use the mediaId shown on an inbound image message.`);
+
+      const token = lineChannelToken(conversation.channelId);
+      if (!token) return imageError(`LINE channel "${conversation.channelId}" has no access token configured, so its media can't be fetched.`);
+
+      let media: { content: ArrayBuffer; contentType: string };
+      try {
+        media = await downloadLineMessageContent(messageId, token);
+      } catch (error) {
+        // LINE only keeps message content for a limited window; an old image is
+        // simply gone rather than an error worth surfacing as a crash.
+        return imageError(`Couldn't fetch that image from LINE — it may have expired. (${formatError(error)})`);
+      }
+
+      const bytes = media.content.byteLength;
+      if (bytes > MAX_IMAGE_BYTES) return imageError(`That image is ${(bytes / 1024 / 1024).toFixed(1)} MB, over the ${MAX_IMAGE_BYTES / 1024 / 1024} MB inline limit.`);
+      if (!media.contentType.startsWith('image/')) return imageError(`That message is not an image (content type: ${media.contentType}).`);
+
+      const base64 = Buffer.from(media.content).toString('base64');
+      const caption = `Image from ${conversationLabel(conversation)}, sent by ${target.senderName || shortId(target.senderId) || 'client'} at ${formatTimestamp(target.at)}.`;
+      return {
+        text: caption,
+        structured: { conversationId, messageId, mimeType: media.contentType, bytes, sentAt: new Date(target.at).toISOString() },
+        content: [
+          { type: 'text', text: caption },
+          { type: 'image', data: base64, mimeType: media.contentType },
+        ],
+      };
+    },
+  },
 ];
+
+function imageError(message: string): ToolOutput {
+  return { text: message, structured: { error: message } };
+}
+
+function lineChannelToken(channelId: string): string | undefined {
+  try {
+    return getTenantChannelConfig(channelId).line?.channelAccessToken || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function formatError(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
 
 export function findTool(name: string) {
   return connectorTools.find((tool) => tool.name === name);
@@ -340,6 +426,10 @@ function serializeMessage(message: StoredMessage) {
     sender: message.senderName ?? message.senderId ?? null,
     messageType: message.messageType,
     text: message.text,
+    // For inbound media, expose the platform message id so Claude can fetch the
+    // actual image with get_image. Outbound replies carry a synthetic id that is
+    // not fetchable, so they are left without one.
+    mediaId: message.direction === 'inbound' && MEDIA_TYPES.has(message.messageType) ? message.externalMessageId ?? null : undefined,
   };
 }
 

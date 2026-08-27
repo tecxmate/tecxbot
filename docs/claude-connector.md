@@ -110,10 +110,21 @@ curl -s https://your-domain.vercel.app/api/mcp \
 | `list_conversations` | Which client chats exist, ordered by recent activity, with a preview of the last message. |
 | `get_conversation` | The full transcript of one conversation. |
 | `search_messages` | "When did they mention the invoice?" across every captured conversation. |
+| `get_image` | Actually *see* an image a client sent on LINE. |
 | `connector_status` | Storage backend, capture state, configured channels, how much history exists. Use it when a tool returns nothing. |
 
 Time windows accept relative values (`24h`, `7d`, `2w`), an ISO date
 (`2026-08-01`), or `all`.
+
+### Viewing images
+
+Text is captured verbatim; images and other media are captured as short
+placeholders (`[image]`), not stored. To let Claude actually see one, an image
+message carries a `mediaId` in `get_conversation` / `latest_context`; pass it to
+`get_image`, which fetches the picture **live from LINE on demand** — nothing is
+persisted. This works while LINE still retains the media (a limited window), so
+it's for recent images, not the whole archive. LINE only; capped at 5 MB per
+image.
 
 Set `CONNECTOR_TIMEZONE=Asia/Taipei` to render timestamps in local time instead
 of UTC.
