@@ -264,9 +264,9 @@ export const connectorTools: ToolDefinition[] = [
 
   {
     name: 'get_image',
-    title: 'View an image a client sent',
+    title: 'View an image from a conversation',
     description:
-      'Fetch and view an image message a client sent on LINE, so you can actually see it. Pass the conversation_id and the message\'s `mediaId` (shown on image messages in get_conversation / latest_context). The image is fetched live from LINE on demand — nothing is stored — so it works for recent images while LINE still retains the media.',
+      'Fetch and view an image message sent in a LINE conversation — by anyone in it, a client or the operator — so you can actually see it. Pass the conversation_id and the message\'s `mediaId` (shown on image messages in get_conversation / latest_context). The image is fetched live from LINE on demand — nothing is stored — so it works for recent images while LINE still retains the media.',
     inputSchema: {
       type: 'object',
       properties: {
