@@ -10,7 +10,9 @@ import { canConsumeCharacters, consumeCharacters, getRemainingCharacters } from 
 import { handleMcpAgentLineEvent } from '../../botSystems/mcpAgent.js';
 import { handleVietnameseTeacherLineEvent } from '../../botSystems/vietnameseTeacher.js';
 import { handleTecxmateLineEvent } from '../../botSystems/tecxmate.js';
+import { handleClaudeAssistantLineEvent } from '../../botSystems/claudeAssistant.js';
 import { downloadLineMessageContent, mainMenuButtons, replyLineMessage } from './client.js';
+import { captureLineInbound, captureLineOutbound } from './ingest.js';
 import type { LineEvent, LineMessage, LineSource, LineWebhookPayload } from './types.js';
 
 export type { LineWebhookPayload };
@@ -23,13 +25,21 @@ export type LineWebhookRuntime = {
 export async function handleLineWebhook(payload: LineWebhookPayload, runtime: LineWebhookRuntime) {
   let processed = 0;
   for (const event of payload.events ?? []) {
+    // Capture unconditionally: client messages the bot chooses not to answer
+    // (an untagged group chat, a paused translation) are exactly the context
+    // the Claude connector exists to surface. It runs alongside the reply so
+    // profile lookups and the store write never delay the client's answer.
+    const capturing = captureLineInbound(event, runtime).catch((error) => console.error('[line-webhook] Inbound capture failed:', error));
     const replyToken = 'replyToken' in event ? event.replyToken : undefined;
-    if (!replyToken) continue;
-    const reply = await handleLineEvent(event, runtime);
-    if (reply) {
-      await replyLineMessage(replyToken, reply, runtime.channel.line?.channelAccessToken);
-      processed += 1;
+    if (replyToken) {
+      const reply = await handleLineEvent(event, runtime);
+      if (reply) {
+        await replyLineMessage(replyToken, reply, runtime.channel.line?.channelAccessToken);
+        await captureLineOutbound(event, reply, runtime);
+        processed += 1;
+      }
     }
+    await capturing;
   }
   return processed;
 }
@@ -38,6 +48,7 @@ async function handleLineEvent(event: LineEvent, runtime: LineWebhookRuntime): P
   if (runtime.channel.botSystem.kind === 'mcp_agent') return handleMcpAgentLineEvent(event, runtime);
   if (runtime.channel.botSystem.kind === 'vietnamese_teacher') return handleVietnameseTeacherLineEvent(event, runtime);
   if (runtime.channel.botSystem.kind === 'tecxmate') return handleTecxmateLineEvent(event, runtime);
+  if (runtime.channel.botSystem.kind === 'claude_assistant') return handleClaudeAssistantLineEvent(event, runtime);
   const tenant = runtime.tenant;
   const source = event.source;
   const session = getSession({ tenantId: tenant.id, platform: 'line', sourceType: source?.type ?? 'user', sourceId: source?.groupId ?? source?.roomId ?? source?.userId ?? 'unknown', userId: source?.userId });

@@ -1,6 +1,6 @@
 export type Platform = 'line' | 'facebook' | 'telegram' | 'whatsapp' | 'zalo' | 'web';
 
-export type BotSystemKind = 'group_translator' | 'mcp_agent' | 'vietnamese_teacher' | 'tecxmate';
+export type BotSystemKind = 'group_translator' | 'mcp_agent' | 'vietnamese_teacher' | 'tecxmate' | 'claude_assistant';
 
 export type TenantConfig = {
   id: string;
@@ -34,6 +34,20 @@ export type BotSystemConfig =
       // LINE user ids allowed to dispatch tasks. Empty = personal deployment
       // where anyone who can tag the bot is treated as the owner.
       ownerUserIds: string[];
+    }
+  | {
+      kind: 'claude_assistant';
+      // LINE user ids allowed to invoke Claude. Empty = personal deployment.
+      ownerUserIds: string[];
+      // When false (default), Claude only answers in the 1:1 owner chat, never
+      // in a group — so it never posts a client-visible message on its own.
+      allowGroups: boolean;
+      systemPrompt?: string;
+      // In a 1:1 chat, which captured conversation to use as context. Unset =
+      // the most recently active one.
+      contextConversationId?: string;
+      contextMessages?: number;
+      maxTokens?: number;
     };
 
 export type TenantChannelConfig = {
@@ -43,11 +57,22 @@ export type TenantChannelConfig = {
   label: string;
   botSystem: BotSystemConfig;
   line?: LineChannelConfig;
+  whatsapp?: WhatsappChannelConfig;
 };
 
 export type LineChannelConfig = {
   channelSecret: string;
   channelAccessToken: string;
+};
+
+// WhatsApp Business Platform (Meta Cloud API). The connector only needs to read
+// inbound traffic, so `accessToken` is optional — it is required to send.
+export type WhatsappChannelConfig = {
+  phoneNumberId: string;
+  accessToken?: string;
+  appSecret?: string;
+  verifyToken?: string;
+  displayPhoneNumber?: string;
 };
 
 export type TenantPlan = {

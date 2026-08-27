@@ -31,6 +31,22 @@ Tracks per-platform group id, enabled language codes, and user opt-out state.
 
 Current implementation uses memory. Production should store this durably because LINE webhook requests can land on different serverless instances.
 
+2b. Conversation log (connector storage)
+
+Durable, cross-platform record of what clients actually said. Unlike the session
+and group stores above, this one has to outlive the request that wrote it: the
+Claude connector reads it from a different serverless invocation than the
+webhook that captured it. Postgres when `CONNECTOR_DATABASE_URL` is set, memory
+otherwise. See `src/core/conversationStore.ts` and `docs/connector-schema.sql`.
+
+2c. Claude connector
+
+`/api/mcp` serves that log to Claude as a read-only MCP server over Streamable
+HTTP, so a session starts with the latest client context already loaded. Note
+the direction: `src/core/mcpClient.ts` makes Tecxbot an MCP *client* of some
+other server, while `src/connector/` makes Tecxbot an MCP *server* that Claude
+connects to. See `docs/claude-connector.md`.
+
 3. Workflow engine
 
 Runs deterministic workflows. It should own required fields, validation rules, state transitions, confirmations, and audit history. LLMs should not validate critical structured data.

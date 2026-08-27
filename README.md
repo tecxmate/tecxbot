@@ -38,6 +38,8 @@ Current scope:
 - OpenAI transcript polish
 - Rich menu setup script
 - Swappable MCP-backed bot runtime for command-driven domain bots
+- Claude connector (MCP server) serving LINE and WhatsApp client conversations
+- WhatsApp Business (Cloud API) webhook for conversation capture
 
 This intentionally does not port dental demo patients, clinic-specific CRM UI, Telegram command handlers, or one-clinic assumptions.
 
@@ -45,8 +47,65 @@ See docs/architecture.md.
 
 See also:
 
+- `docs/claude-connector.md`
 - `docs/multi-tenant-architecture.md`
 - `docs/neon-schema.sql`
+- `docs/connector-schema.sql`
+
+## Claude connector
+
+Tecxbot can hand Claude the context of your latest client conversations. LINE
+and WhatsApp traffic is captured into a durable conversation log, and `/api/mcp`
+exposes it as an MCP server, so a Claude session starts already knowing what
+each client last said.
+
+```bash
+claude mcp add --transport http tecxbot \
+  https://your-domain.vercel.app/api/mcp \
+  --header "Authorization: Bearer $CONNECTOR_TOKEN"
+```
+
+Required environment:
+
+```text
+CONNECTOR_TOKEN=<long random string>
+CONNECTOR_DATABASE_URL=postgresql://...
+```
+
+The endpoint fails closed — with no `CONNECTOR_TOKEN` it refuses every request.
+Without `CONNECTOR_DATABASE_URL` the log falls back to memory, which only holds
+what a single serverless instance captured since its last cold start.
+
+Read-only tools: `latest_context`, `list_conversations`, `get_conversation`,
+`search_messages`, `connector_status`. Nothing here sends messages or changes
+state on LINE or WhatsApp.
+
+WhatsApp is capture-only and routes by `phone_number_id`:
+
+```text
+https://your-domain.vercel.app/api/whatsapp-webhook
+```
+
+Messenger and WhatsApp are served by the same function — they are the same Meta
+webhook protocol, and the payload's `object` field tells them apart — so that
+URL is a rewrite onto `/api/facebook-webhook`. Either address works.
+
+Full setup, including the Meta dashboard fields and what gets captured, is in
+`docs/claude-connector.md`.
+
+## Checks
+
+```bash
+npm run build   # typecheck (tsc --noEmit)
+npm test        # connector smoke tests
+```
+
+`npm test` compiles to `dist/` and runs `scripts/connector-smoke.mjs`, which
+ingests LINE and WhatsApp messages into the in-memory store and then drives the
+MCP server over JSON-RPC exactly as a client would. It needs no database, no
+network, and no credentials.
+
+Both run on every push and pull request via `.github/workflows/ci.yml`.
 
 ## Messenger ops intake
 
@@ -84,7 +143,7 @@ FB_BOT_MENTION_NAMES=tecxbot,tecxmate
 OPS_REPO_ALIASES=corp=tecxmate/tecxcorp,bot=tecxmate/tecxbot
 OPS_GITHUB_DEFAULT_ASSIGNEES=github-user
 OPS_GITHUB_LABELS=ops-task,from-messenger
-OPS_TEAM_DIRECTORY_FILE=/Users/niko/antigravity/tecxcorp/ops/task_owner_contacts.csv
+OPS_TEAM_DIRECTORY_FILE=/absolute/path/to/tecxcorp/ops/task_owner_contacts.csv
 LINEAR_PROJECT_ID=
 LINEAR_LABEL_IDS=
 LINEAR_DEFAULT_ASSIGNEE_ID=
@@ -96,7 +155,7 @@ extra columns when you add them:
 
 ```csv
 task_owner,full_name,position,github_login,linear_user_id,aliases,channel,recipient_id,active
-brian,Brian Doan,CTO,briandoan,linear-user-uuid,"brian|cto",messenger,PSID,yes
+alex,Alex Rivera,CTO,alex-rivera,linear-user-uuid,"alex|cto",messenger,PSID,yes
 ```
 
 The intake prompt uses this directory to resolve human names, roles, and
@@ -117,8 +176,11 @@ protocol.
 Run this endpoint from Vercel Cron, GitHub Actions, or another scheduler:
 
 ```text
-GET /api/ops-daily-report?secret=<CRON_SECRET>
+GET /api/cron?job=ops-daily-report&secret=<CRON_SECRET>
 ```
+
+The former `/api/ops-daily-report` URL still works — `vercel.json` rewrites it
+here — so an existing schedule needs no change.
 
 It reads open Linear issues, open issues in `OPS_GITHUB_REPOS`, open Google
 Tasks, and asks Claude to summarize what is being worked on, what is slowing
@@ -204,7 +266,7 @@ Tecxstock is 1:1-only. In LINE groups it does not run stock commands; if someone
 
 Free-form text does not trigger open-ended LLM chat. In groups it is ignored; in 1:1 chat the bot returns deterministic command suggestions with clickable quick-reply chips. For example, `what about TSMC` suggests `/q 2330`, `/flow 2330 5d`, `/n 2330 7`, and `/watch 2330`.
 
-Scheduled reminders are delivered by `GET /api/line-reminders`. Run it every minute from Vercel Pro Cron, GitHub Actions, or another external scheduler. Set `CRON_SECRET` for protected manual invocation.
+Scheduled reminders are delivered by `GET /api/cron?job=line-reminders` (the former `/api/line-reminders` URL is rewritten here, so an existing schedule needs no change). Run it every minute from Vercel Pro Cron, GitHub Actions, or another external scheduler. Set `CRON_SECRET` for protected manual invocation.
 
 ## LINE group translation commands
 

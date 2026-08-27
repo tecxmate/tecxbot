@@ -112,6 +112,67 @@ if (process.env.TECXMATE_LINE_CHANNEL_ACCESS_TOKEN) {
   });
 }
 
+// WhatsApp Business (Meta Cloud API) — ingest-only today: inbound messages are
+// captured for the Claude connector, and no bot replies on WhatsApp. Registered
+// only when a phone number id is configured, so LINE keeps working without it.
+const whatsappChannels = new Map<string, TenantChannelConfig>();
+const whatsappTenantId = process.env.WHATSAPP_TENANT_ID || defaultTenantId;
+const whatsappChannelId = process.env.WHATSAPP_CHANNEL_ID || 'default-whatsapp';
+
+if (process.env.WHATSAPP_PHONE_NUMBER_ID) {
+  whatsappChannels.set(whatsappChannelId, {
+    id: whatsappChannelId,
+    tenantId: whatsappTenantId,
+    platform: 'whatsapp',
+    label: 'WhatsApp Business channel',
+    botSystem: { kind: 'group_translator' },
+    whatsapp: {
+      phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID,
+      accessToken: process.env.WHATSAPP_ACCESS_TOKEN,
+      appSecret: process.env.WHATSAPP_APP_SECRET,
+      verifyToken: process.env.WHATSAPP_VERIFY_TOKEN,
+      displayPhoneNumber: process.env.WHATSAPP_DISPLAY_PHONE_NUMBER,
+    },
+  });
+}
+
+// Claude assistant bot — "Claude in LINE". A channel answers with the captured
+// client conversation as context. Registered only when its access token is set,
+// so nothing else changes when these env vars are absent.
+const claudeTenantId = process.env.CLAUDE_ASSISTANT_TENANT_ID || defaultTenantId;
+const claudeChannelId = process.env.CLAUDE_ASSISTANT_LINE_CHANNEL_ID || 'claude-assistant';
+
+if (process.env.CLAUDE_ASSISTANT_LINE_CHANNEL_ACCESS_TOKEN) {
+  const claudeBotSystem: BotSystemConfig = {
+    kind: 'claude_assistant',
+    ownerUserIds: (process.env.CLAUDE_ASSISTANT_OWNER_USER_IDS || '').split(',').map((id) => id.trim()).filter(Boolean),
+    allowGroups: process.env.CLAUDE_ASSISTANT_ALLOW_GROUPS === 'true',
+    systemPrompt: process.env.CLAUDE_ASSISTANT_SYSTEM_PROMPT || undefined,
+    contextConversationId: process.env.CLAUDE_ASSISTANT_CONTEXT_CONVERSATION_ID || undefined,
+    contextMessages: process.env.CLAUDE_ASSISTANT_CONTEXT_MESSAGES ? Number(process.env.CLAUDE_ASSISTANT_CONTEXT_MESSAGES) : undefined,
+  };
+  tenants.set(claudeTenantId, tenants.get(claudeTenantId) ?? {
+    id: claudeTenantId,
+    name: process.env.CLAUDE_ASSISTANT_NAME || 'TECXMATE',
+    defaultLanguage: 'en',
+    domainContext: 'Client-facing assistant answering from captured conversation context.',
+    botMentionNames: (process.env.CLAUDE_ASSISTANT_BOT_MENTION_NAMES || 'tecxmate,mate,bot').split(',').map((name) => name.trim()).filter(Boolean),
+    freePlan: { id: 'free', name: 'Free', characterLimit: Number(process.env.FREE_CHARACTER_LIMIT || 5000) },
+    botSystem: claudeBotSystem,
+  });
+  lineChannels.set(claudeChannelId, {
+    id: claudeChannelId,
+    tenantId: claudeTenantId,
+    platform: 'line',
+    label: 'Claude assistant LINE channel',
+    botSystem: claudeBotSystem,
+    line: {
+      channelSecret: process.env.CLAUDE_ASSISTANT_LINE_CHANNEL_SECRET || '',
+      channelAccessToken: process.env.CLAUDE_ASSISTANT_LINE_CHANNEL_ACCESS_TOKEN,
+    },
+  });
+}
+
 export function getTenantConfig(tenantId = defaultTenantId): TenantConfig {
   return tenants.get(tenantId) ?? tenants.get(defaultTenantId)!;
 }
@@ -126,4 +187,30 @@ export function resolveTenantChannel(input: { tenantId?: string; channelId?: str
   const channel = getTenantChannelConfig(input.channelId ?? defaultLineChannelId);
   const tenant = getTenantConfig(input.tenantId ?? channel.tenantId);
   return { tenant, channel: { ...channel, botSystem: channel.botSystem ?? tenant.botSystem } };
+}
+
+/**
+ * Resolve the WhatsApp channel an inbound webhook belongs to. Meta identifies
+ * the receiving number by `phone_number_id`, so that is the primary key and the
+ * explicit `?channel=` query is the override.
+ */
+export function resolveWhatsappChannel(input: { channelId?: string; phoneNumberId?: string }) {
+  const channel = (input.channelId ? whatsappChannels.get(input.channelId) : undefined)
+    ?? (input.phoneNumberId ? [...whatsappChannels.values()].find((item) => item.whatsapp?.phoneNumberId === input.phoneNumberId) : undefined);
+  if (!channel) return undefined;
+  return { tenant: getTenantConfig(channel.tenantId), channel };
+}
+
+export function listWhatsappChannels() {
+  return [...whatsappChannels.values()];
+}
+
+/** Channel inventory reported by the connector's `connector_status` tool. */
+export function listConnectorChannels() {
+  return [...lineChannels.values(), ...whatsappChannels.values()].map((channel) => ({
+    id: channel.id,
+    platform: channel.platform,
+    label: channel.label,
+    tenantId: channel.tenantId,
+  }));
 }
