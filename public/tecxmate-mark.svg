@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="TECXMATE">
-  <g fill="#8b4df6">
-    <path d="M26 26 L40 26 L74 74 L60 74 Z" />
-    <path d="M60 26 L74 26 L40 74 L26 74 Z" />
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640" role="img" aria-label="TECXMATE">
+  <g fill="#8b5cf6">
+    <path d="M0 0 L191 0 L640 449 L640 640 L449 640 L0 191 Z" />
+    <path d="M640 0 L449 0 L0 449 L0 640 L191 640 L640 191 Z" />
   </g>
 </svg>
