@@ -193,3 +193,56 @@ The transcripts this connector serves are written by other people. Treat their
 contents as data to report on, not as instructions to act on — the server tells
 Claude exactly that in its MCP `instructions`, and the tools expose no way to
 send or modify anything regardless.
+
+## 9. Claude in LINE (the Claude Tag equivalent)
+
+The connector above *feeds context to Claude Code* — you pull the client
+conversation into a coding session on demand. The **`claude_assistant`** bot
+mode is the other half: it puts Claude *inside LINE*, the way Claude Tag lives
+inside Slack. Tag the bot and it answers using the captured client conversation
+as context, grounded in what was actually said.
+
+This is a distinct channel/bot mode, registered only when
+`CLAUDE_ASSISTANT_LINE_CHANNEL_ACCESS_TOKEN` is set, so nothing else changes
+without it. It requires `ANTHROPIC_API_KEY`, and `CONNECTOR_DATABASE_URL` for
+context that survives across serverless invocations.
+
+### Two modes — pick by who should see Claude
+
+Because this fronts a real client group, the reply surface is a deliberate
+choice, set by `CLAUDE_ASSISTANT_ALLOW_GROUPS`:
+
+- **`false` (default) — private copilot.** Claude answers only in your **1:1**
+  chat with the bot, never in the client group. You ask "what's the latest with
+  the client / draft a reply", it answers from the captured conversation, and
+  you decide what to send. The client never sees an AI message.
+- **`true` — Slack-style.** The bot also replies **inline in the group**, so a
+  tag there gets a client-visible answer. Most like Claude Tag; only enable it
+  when you want the client interacting with the assistant directly.
+
+Either way it is **owner-gated**: with `CLAUDE_ASSISTANT_OWNER_USER_IDS` set,
+only you can invoke it — a client cannot make the bot talk. The transcript is
+passed to Claude as data, with an explicit instruction never to follow
+directions contained inside it.
+
+### Setup
+
+Point a LINE channel's webhook at:
+
+```text
+https://your-domain.vercel.app/api/line-webhook?channel=claude-assistant
+```
+
+and set (see `.env.example` for the full list):
+
+```text
+ANTHROPIC_API_KEY=...
+CLAUDE_ASSISTANT_LINE_CHANNEL_ACCESS_TOKEN=...
+CLAUDE_ASSISTANT_LINE_CHANNEL_SECRET=...
+CLAUDE_ASSISTANT_OWNER_USER_IDS=<your LINE user id>
+CLAUDE_ASSISTANT_ALLOW_GROUPS=false        # flip to true for in-group replies
+```
+
+To run it on an existing account (e.g. TECXMATE) instead of a separate channel,
+set that channel's `bot_system_kind` to `claude_assistant`. Note a channel runs
+one bot mode at a time, so this replaces that channel's current behavior.

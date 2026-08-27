@@ -136,6 +136,43 @@ if (process.env.WHATSAPP_PHONE_NUMBER_ID) {
   });
 }
 
+// Claude assistant bot — "Claude in LINE". A channel answers with the captured
+// client conversation as context. Registered only when its access token is set,
+// so nothing else changes when these env vars are absent.
+const claudeTenantId = process.env.CLAUDE_ASSISTANT_TENANT_ID || defaultTenantId;
+const claudeChannelId = process.env.CLAUDE_ASSISTANT_LINE_CHANNEL_ID || 'claude-assistant';
+
+if (process.env.CLAUDE_ASSISTANT_LINE_CHANNEL_ACCESS_TOKEN) {
+  const claudeBotSystem: BotSystemConfig = {
+    kind: 'claude_assistant',
+    ownerUserIds: (process.env.CLAUDE_ASSISTANT_OWNER_USER_IDS || '').split(',').map((id) => id.trim()).filter(Boolean),
+    allowGroups: process.env.CLAUDE_ASSISTANT_ALLOW_GROUPS === 'true',
+    systemPrompt: process.env.CLAUDE_ASSISTANT_SYSTEM_PROMPT || undefined,
+    contextConversationId: process.env.CLAUDE_ASSISTANT_CONTEXT_CONVERSATION_ID || undefined,
+    contextMessages: process.env.CLAUDE_ASSISTANT_CONTEXT_MESSAGES ? Number(process.env.CLAUDE_ASSISTANT_CONTEXT_MESSAGES) : undefined,
+  };
+  tenants.set(claudeTenantId, tenants.get(claudeTenantId) ?? {
+    id: claudeTenantId,
+    name: process.env.CLAUDE_ASSISTANT_NAME || 'TECXMATE',
+    defaultLanguage: 'en',
+    domainContext: 'Client-facing assistant answering from captured conversation context.',
+    botMentionNames: (process.env.CLAUDE_ASSISTANT_BOT_MENTION_NAMES || 'tecxmate,mate,bot').split(',').map((name) => name.trim()).filter(Boolean),
+    freePlan: { id: 'free', name: 'Free', characterLimit: Number(process.env.FREE_CHARACTER_LIMIT || 5000) },
+    botSystem: claudeBotSystem,
+  });
+  lineChannels.set(claudeChannelId, {
+    id: claudeChannelId,
+    tenantId: claudeTenantId,
+    platform: 'line',
+    label: 'Claude assistant LINE channel',
+    botSystem: claudeBotSystem,
+    line: {
+      channelSecret: process.env.CLAUDE_ASSISTANT_LINE_CHANNEL_SECRET || '',
+      channelAccessToken: process.env.CLAUDE_ASSISTANT_LINE_CHANNEL_ACCESS_TOKEN,
+    },
+  });
+}
+
 export function getTenantConfig(tenantId = defaultTenantId): TenantConfig {
   return tenants.get(tenantId) ?? tenants.get(defaultTenantId)!;
 }
