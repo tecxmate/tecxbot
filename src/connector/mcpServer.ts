@@ -98,7 +98,9 @@ async function callTool(params: unknown) {
   try {
     const output = await tool.handler(args);
     return {
-      content: [{ type: 'text', text: output.text }],
+      // A tool may return richer content blocks (e.g. an image); otherwise the
+      // text is wrapped as a single text block.
+      content: output.content ?? [{ type: 'text', text: output.text }],
       structuredContent: output.structured,
       isError: false,
     };

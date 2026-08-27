@@ -219,9 +219,10 @@ await test('notifications get no response', async () => {
   assertEqual(await handleMcpMessage({ jsonrpc: '2.0', method: 'notifications/initialized' }), undefined, 'response');
 });
 
-await test('tools/list advertises five read-only tools', async () => {
+await test('tools/list advertises six read-only tools', async () => {
   const { tools } = await rpc('tools/list');
-  assertEqual(tools.length, 5, 'tool count');
+  assertEqual(tools.length, 6, 'tool count');
+  assert(tools.some((tool) => tool.name === 'get_image'), 'get_image is advertised');
   assert(tools.every((tool) => tool.annotations.readOnlyHint), 'every tool is annotated read-only');
   assert(tools.every((tool) => tool.inputSchema.type === 'object'), 'every tool has an object schema');
 });
@@ -335,7 +336,7 @@ await test('a wrong token is rejected', async () => {
 await test('a bearer header authenticates', async () => {
   const response = await httpCall({ headers: AUTH, body: jsonRpc('tools/list') });
   assertEqual(response.code, 200, 'status');
-  assertEqual(response.body.result.tools.length, 5, 'tool count');
+  assertEqual(response.body.result.tools.length, 6, 'tool count');
 });
 
 await test('a query-param key authenticates, for clients that only take a URL', async () => {
@@ -542,6 +543,45 @@ await test('CONNECTOR_TENANT_ID pins the connector to one tenant, overriding the
   assertEqual(asGhost.structuredContent.conversations.length, 0, 'no cross-tenant read when pinned elsewhere');
 
   delete process.env.CONNECTOR_TENANT_ID;
+});
+
+// ---- image read ----
+// The actual LINE download needs the live content API, so these cover the
+// discovery + validation around it (the network fetch is exercised in prod).
+
+console.log('\nimage read');
+
+await recordMessage({
+  tenantId: 'demo', channelId: 'tecxmate', platform: 'line', conversationType: 'group',
+  externalConversationId: 'C_img', title: 'Image Group', direction: 'inbound',
+  senderId: 'U_photo', senderName: 'Rosa', text: '[image]', messageType: 'image',
+  externalMessageId: 'linemsg-777', at: now - 60_000,
+});
+const IMG_CONV = 'line:tecxmate:group:C_img';
+
+await test('image messages expose a mediaId for fetching', async () => {
+  const result = await callTool('get_conversation', { conversation_id: IMG_CONV });
+  const image = result.structuredContent.messages.find((m) => m.messageType === 'image');
+  assert(image, 'the image message is present');
+  assertEqual(image.mediaId, 'linemsg-777', 'mediaId is the platform message id');
+});
+
+await test('get_image requires both ids', async () => {
+  assertEqual((await callTool('get_image', { conversation_id: IMG_CONV })).isError, true, 'missing message_id');
+  assertEqual((await callTool('get_image', {})).isError, true, 'missing both');
+});
+
+await test('get_image explains an unknown conversation or media id', async () => {
+  assertIncludes((await callTool('get_image', { conversation_id: 'line:tecxmate:group:nope', message_id: 'x' })).content[0].text, 'No conversation found', 'unknown conversation');
+  assertIncludes((await callTool('get_image', { conversation_id: IMG_CONV, message_id: 'not-real' })).content[0].text, 'No fetchable media', 'unknown media id');
+});
+
+await test('get_image reaches the fetch step and reports an unconfigured channel', async () => {
+  // The tecxmate channel has no access token in the test env, so validation
+  // passes all the way to the token lookup and stops there gracefully.
+  const result = await callTool('get_image', { conversation_id: IMG_CONV, message_id: 'linemsg-777' });
+  assert(!result.isError, 'graceful, not a crash');
+  assertIncludes(result.content[0].text, 'no access token', 'stops at the channel token step');
 });
 
 // ---- claude assistant ----
