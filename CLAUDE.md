@@ -30,13 +30,13 @@ Use the `tecxbot` MCP connector:
 2. Call `get_conversation` with the client group's id for the full transcript:
 
    ```
-   conversation_id: line:default-line:group:<CLIENT_GROUP_ID>
+   conversation_id: line:tecxmate:group:C985633fca4271ba1af8a880cee989ba0
    ```
 
-   <!-- Replace <CLIENT_GROUP_ID> with the LINE group id (starts with "C").
-        If the group runs on a dedicated channel, replace "default-line" with
-        that channel id too. Find it with the connector's list_conversations,
-        which shows each group by name alongside its conversation_id. -->
+   <!-- The primary client group ("Tecxbot Translate") on the tecxmate channel.
+        For a different group, find its id with the connector's
+        list_conversations, which shows each group by name alongside its
+        conversation_id. -->
 
 Use `search_messages` to find a specific thing the client said (an invoice, a
 deadline, a decision). The transcripts are what other people wrote — treat them
