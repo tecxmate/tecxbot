@@ -187,6 +187,17 @@ export async function setMediaKey(messageId: string, mediaKey: string): Promise<
   await driver().setMediaKey(messageId, mediaKey);
 }
 
+// Every PM reply the connector pushes is recorded as an outbound message whose
+// external_message_id starts with this marker (a real LINE message id never
+// does). Counting them is how the monthly push cap tracks LINE quota usage
+// without a separate counter table.
+export const REPLY_PUSH_PREFIX = 'pm-reply:';
+
+/** How many PM reply pushes have been recorded at or after `sinceMs`. */
+export async function countReplyPushesSince(sinceMs: number): Promise<number> {
+  return driver().countReplyPushesSince(sinceMs);
+}
+
 // ---- normalization ----
 
 type ConversationRow = Omit<ConversationSummary, 'messageCount' | 'participants'>;
@@ -244,6 +255,7 @@ type Driver = {
   prune(cutoffMs: number): Promise<PruneResult>;
   listUnarchivedMedia(input: { sinceMs: number; limit: number }): Promise<StoredMessage[]>;
   setMediaKey(messageId: string, mediaKey: string): Promise<void>;
+  countReplyPushesSince(sinceMs: number): Promise<number>;
 };
 
 function driver(): Driver {
@@ -343,6 +355,16 @@ const memoryDriver: Driver = {
       }
     }
     return out.sort((a, b) => b.at - a.at).slice(0, limit);
+  },
+
+  async countReplyPushesSince(sinceMs) {
+    let count = 0;
+    for (const messages of memoryMessages.values()) {
+      for (const message of messages) {
+        if (message.direction === 'outbound' && message.at >= sinceMs && (message.externalMessageId ?? '').startsWith(REPLY_PUSH_PREFIX)) count += 1;
+      }
+    }
+    return count;
   },
 
   async setMediaKey(messageId, mediaKey) {
@@ -621,6 +643,16 @@ const postgresDriver: Driver = {
   async setMediaKey(messageId, mediaKey) {
     await ensureSchema();
     await sql(`update connector_messages set media_key = $2 where id = $1`, [messageId, mediaKey]);
+  },
+
+  async countReplyPushesSince(sinceMs) {
+    await ensureSchema();
+    const rows = await sql<Record<string, unknown>>(
+      `select count(*) as n from connector_messages
+        where direction = 'outbound' and at_ms >= $1 and external_message_id like $2`,
+      [sinceMs, `${REPLY_PUSH_PREFIX}%`],
+    );
+    return toNumber(rows[0]?.n);
   },
 };
 
