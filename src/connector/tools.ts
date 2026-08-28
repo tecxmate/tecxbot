@@ -19,11 +19,14 @@ import {
 import { listConnectorChannels } from '../core/tenantStore.js';
 import { fetchMediaBytes } from './media.js';
 import { isR2Configured } from '../core/r2.js';
+import { isReplyEnabled, replyAllowlist, sendLineReply, type ReplyReason } from './reply.js';
 
 // A tool normally returns text; `content` lets it return richer MCP blocks
 // (e.g. an image), which the server uses in place of the wrapped text.
 export type ToolContentBlock = { type: string; [key: string]: unknown };
 export type ToolOutput = { text: string; structured: Record<string, unknown>; content?: ToolContentBlock[] };
+
+export type ToolAnnotations = { readOnlyHint?: boolean; destructiveHint?: boolean; openWorldHint?: boolean };
 
 export type ToolDefinition = {
   name: string;
@@ -31,6 +34,13 @@ export type ToolDefinition = {
   description: string;
   inputSchema: Record<string, unknown>;
   handler: (args: Record<string, unknown>) => Promise<ToolOutput>;
+  // Most tools are read-only; a tool that writes (e.g. send_line_reply) sets its
+  // own annotations. Default is applied in toolListPayload.
+  annotations?: ToolAnnotations;
+  // A tool can be gated off at runtime by env. When this returns false the tool
+  // is not advertised in tools/list (it stays callable so an explicit call gets
+  // a helpful "how to enable" message rather than "unknown tool").
+  enabled?: () => boolean;
 };
 
 // Inlining an image as base64 inflates the JSON-RPC response ~1.33x, and the
@@ -255,6 +265,7 @@ export const connectorTools: ToolDefinition[] = [
         '',
         `storage: ${stats.backend}${stats.durable ? ' (durable)' : ' (in-memory — history is lost on every cold start)'}`,
         `capture: ${isCaptureEnabled() ? 'on' : 'off (CONNECTOR_CAPTURE=false)'}`,
+        `replies: ${replyStatusLine()}`,
         `media archival: ${isR2Configured() ? 'on (Cloudflare R2)' : 'off — media served live from LINE, recent only'}`,
         `conversations captured: ${stats.conversations}`,
         `messages captured: ${stats.messages}`,
@@ -265,7 +276,45 @@ export const connectorTools: ToolDefinition[] = [
       ];
       if (stats.error) lines.push('', `storage error: ${stats.error}`);
       if (!stats.durable) lines.push('', 'To keep history across requests, set CONNECTOR_DATABASE_URL to a Postgres connection string.');
-      return { text: lines.join('\n'), structured: { ...stats, capture: isCaptureEnabled(), mediaArchival: isR2Configured(), channels } };
+      return {
+        text: lines.join('\n'),
+        structured: {
+          ...stats,
+          capture: isCaptureEnabled(),
+          replies: { enabled: isReplyEnabled(), allowlist: replyAllowlist() },
+          mediaArchival: isR2Configured(),
+          channels,
+        },
+      };
+    },
+  },
+
+  {
+    name: 'send_line_reply',
+    title: 'Reply in a LINE conversation (as the PM)',
+    description:
+      'Post a text message back into a LINE conversation, as the TECXMATE project manager (PM). This actually sends — everyone in the group sees it. Use it ONLY to answer a message that tags or is addressed to the PM, and ground the reply in the conversation and in project status from Jira. Do not invent dates, prices, or commitments; check Jira or say you will follow up. Available only when replying is enabled on this deployment (CONNECTOR_ALLOW_REPLY=true); otherwise the connector is read-only.',
+    enabled: () => isReplyEnabled(),
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        conversation_id: { type: 'string', description: 'The conversation to reply into, e.g. "line:tecxmate:group:C1234abcd" (from latest_context / list_conversations).' },
+        text: { type: 'string', description: 'The message to send, as the PM. Concise and professional. Written verbatim to the group.' },
+        tenant_id: tenantProperty,
+      },
+      required: ['conversation_id', 'text'],
+      additionalProperties: false,
+    },
+    async handler(args) {
+      const conversationId = readString(args.conversation_id);
+      const text = readString(args.text);
+      if (!conversationId) throw new Error('conversation_id is required.');
+      if (!text) throw new Error('text is required.');
+      const outcome = await sendLineReply({ conversationId, text, tenantId: enforcedTenant(args.tenant_id) });
+      if (!outcome.ok) return replyError(outcome.reason, conversationId);
+      const confirmation = `Sent to ${conversationId} at ${formatTimestamp(outcome.at)}.`;
+      return { text: confirmation, structured: { sent: true, conversationId, to: outcome.to, at: new Date(outcome.at).toISOString() } };
     },
   },
 
@@ -371,6 +420,24 @@ function imageError(message: string): ToolOutput {
   return { text: message, structured: { error: message } };
 }
 
+function replyStatusLine(): string {
+  if (!isReplyEnabled()) return 'off (read-only — set CONNECTOR_ALLOW_REPLY=true to let the PM reply)';
+  const allow = replyAllowlist();
+  return allow.length ? `on (send_line_reply) — restricted to ${allow.length} conversation${allow.length === 1 ? '' : 's'}` : 'on (send_line_reply) — any LINE conversation';
+}
+
+function replyError(reason: ReplyReason, conversationId: string): ToolOutput {
+  const message = {
+    disabled: 'Replying is turned off on this deployment. Set CONNECTOR_ALLOW_REPLY=true to let the PM post to LINE.',
+    empty: 'Nothing to send — the reply text was empty.',
+    not_found: `No conversation found with id "${conversationId}". Call list_conversations to see the captured conversations.`,
+    not_line: 'Only LINE conversations can be replied to — WhatsApp is capture-only here.',
+    not_allowed: `Replying to "${conversationId}" isn't allowed. Add it to CONNECTOR_REPLY_CONVERSATION_IDS, or clear that list to allow any LINE conversation.`,
+    no_token: 'The LINE channel for this conversation has no access token configured, so the reply can\'t be sent.',
+  }[reason];
+  return { text: message, structured: { sent: false, reason, conversationId } };
+}
+
 // Resolve and validate a media reference: the message id must belong to this
 // conversation as inbound media, so a tool can only reach media actually sent
 // here — not an arbitrary platform id.
@@ -393,13 +460,15 @@ export function findTool(name: string) {
 }
 
 export function toolListPayload() {
-  return connectorTools.map((tool) => ({
-    name: tool.name,
-    title: tool.title,
-    description: tool.description,
-    inputSchema: tool.inputSchema,
-    annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
-  }));
+  return connectorTools
+    .filter((tool) => tool.enabled?.() !== false)
+    .map((tool) => ({
+      name: tool.name,
+      title: tool.title,
+      description: tool.description,
+      inputSchema: tool.inputSchema,
+      annotations: tool.annotations ?? { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+    }));
 }
 
 // ---- rendering ----

@@ -31,8 +31,13 @@ _As of the Cloudflare R2 media work (`#6`). Update this note as things change._
 - **Durable media on Cloudflare R2** (`#6`). Code is merged; inactive until the
   R2 env vars are set. Until then, `get_image` / `get_file` fetch **live from
   LINE** (recent media only). Video is intentionally not archived.
+- **TECXMATE PM reply** (`send_line_reply`). Lets a connected Claude (Claude
+  Desktop / Claude Code, on your own plan — no `ANTHROPIC_API_KEY`) reply into the
+  client LINE group as the PM, checking Jira for status. Fail-closed: off and not
+  even advertised until `CONNECTOR_ALLOW_REPLY=true`. See `docs/tecxmate-pm.md`.
 - **Claude-in-LINE assistant** (`claude_assistant` bot mode). Code is merged but
-  not enabled on any channel. See `docs/claude-connector.md` §9.
+  not enabled on any channel. This one *does* use the Claude API key. See
+  `docs/claude-connector.md` §9.
 
 ## Remaining setup (do these)
 
@@ -57,7 +62,18 @@ reconnect** the connector in the Claude app so it picks up the new tools.
   `Tecxmate`). Only **TECXMATE (@234wrzwi)** should be in client groups; drop the
   duplicates to avoid confusion.
 
-### 4. (Optional) Enable Claude-in-LINE
+### 4. (Optional) Turn on the TECXMATE PM reply
+Let Claude on your own plan answer in the client group as the PM — no API key.
+1. In Vercel, set `CONNECTOR_ALLOW_REPLY=true` and
+   `CONNECTOR_REPLY_CONVERSATION_IDS=line:tecxmate:group:C985633fca4271ba1af8a880cee989ba0`
+   (scopes replies to just the client group). Redeploy.
+2. In Claude Desktop / Claude Code, connect **both** the tecxbot connector and the
+   **Jira (Atlassian)** connector, then reconnect tecxbot so `send_line_reply`
+   appears.
+3. Give Claude the PM prompt and run it. Full walkthrough: `docs/tecxmate-pm.md`.
+   Note: project tracking is **Jira** now, not Linear.
+
+### 5. (Optional) Enable Claude-in-LINE
 Set `ANTHROPIC_API_KEY` and the `CLAUDE_ASSISTANT_*` vars, point a channel at
 `?channel=claude-assistant`. Defaults to 1:1-only (`CLAUDE_ASSISTANT_ALLOW_GROUPS=false`)
 so it never posts in the client group unless you opt in. See `docs/claude-connector.md` §9.
