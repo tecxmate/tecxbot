@@ -37,7 +37,9 @@ create table if not exists connector_messages (
   message_type text not null default 'text',
   external_message_id text,
   text text not null,
-  at_ms bigint not null
+  at_ms bigint not null,
+  -- R2 object key once media is archived (null until the archive-media job runs).
+  media_key text
 );
 
 create index if not exists connector_messages_conversation_idx

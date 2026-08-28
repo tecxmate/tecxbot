@@ -111,20 +111,34 @@ curl -s https://your-domain.vercel.app/api/mcp \
 | `get_conversation` | The full transcript of one conversation. |
 | `search_messages` | "When did they mention the invoice?" across every captured conversation. |
 | `get_image` | Actually *see* an image sent in a LINE conversation (by anyone in it). |
-| `connector_status` | Storage backend, capture state, configured channels, how much history exists. Use it when a tool returns nothing. |
+| `get_file` | Open a non-image file (document, PDF, text/CSV) sent in a conversation. |
+| `connector_status` | Storage backend, capture state, media archival, configured channels, how much history exists. Use it when a tool returns nothing. |
 
 Time windows accept relative values (`24h`, `7d`, `2w`), an ISO date
 (`2026-08-01`), or `all`.
 
 ### Viewing images
 
-Text is captured verbatim; images and other media are captured as short
-placeholders (`[image]`), not stored. To let Claude actually see one, an image
-message carries a `mediaId` in `get_conversation` / `latest_context`; pass it to
-`get_image`, which fetches the picture **live from LINE on demand** — nothing is
-persisted. This works while LINE still retains the media (a limited window), so
-it's for recent images, not the whole archive. LINE only; capped at 5 MB per
-image.
+Text is captured verbatim; images and files are captured as short placeholders
+(`[image]`, `[file: quote.pdf]`). Each media message carries a `mediaId` in
+`get_conversation` / `latest_context`; pass it to `get_image` (to see a picture)
+or `get_file` (to open a document/PDF/text file). Images cap at 5 MB inline;
+text files are returned as readable text.
+
+**Durable media (Cloudflare R2).** By default media is fetched **live from LINE
+on demand**, which only works while LINE still retains it (a short window). To
+keep media permanently, configure R2 (see §7 env) and schedule the
+`archive-media` cron job — it downloads new media while LINE still has it and
+stores it in your R2 bucket. `get_image` / `get_file` then serve from R2 first
+(permanent) and fall back to live LINE for anything not yet archived. Nothing is
+stored until you turn R2 on, so this is opt-in — and it does mean persisting
+clients' media, a deliberate choice. Video is not archived (recent-only via LINE).
+
+```text
+GET /api/cron?job=archive-media&secret=<CRON_SECRET>
+```
+
+Schedule it every few minutes so media is captured before LINE's window closes.
 
 Set `CONNECTOR_TIMEZONE=Asia/Taipei` to render timestamps in local time instead
 of UTC.
@@ -197,6 +211,7 @@ alive. Nothing configured in a dashboard or scheduler needs to change.
 | `/api/line-reminders` | `api/cron.ts?job=line-reminders` | |
 | `/api/ops-daily-report` | `api/cron.ts?job=ops-daily-report` | |
 | (schedule directly) | `api/cron.ts?job=connector-prune` | Retention sweep; no legacy URL |
+| (schedule directly) | `api/cron.ts?job=archive-media` | Archives media to R2; no legacy URL |
 
 ## 8. A note on trust
 

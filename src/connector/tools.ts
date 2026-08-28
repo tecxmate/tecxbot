@@ -16,8 +16,9 @@ import {
   type ConversationSummary,
   type StoredMessage,
 } from '../core/conversationStore.js';
-import { getTenantChannelConfig, listConnectorChannels } from '../core/tenantStore.js';
-import { downloadLineMessageContent } from '../platforms/line/client.js';
+import { listConnectorChannels } from '../core/tenantStore.js';
+import { fetchMediaBytes } from './media.js';
+import { isR2Configured } from '../core/r2.js';
 
 // A tool normally returns text; `content` lets it return richer MCP blocks
 // (e.g. an image), which the server uses in place of the wrapped text.
@@ -35,7 +36,12 @@ export type ToolDefinition = {
 // Inlining an image as base64 inflates the JSON-RPC response ~1.33x, and the
 // model has to ingest all of it — so cap what get_image will return.
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+const MAX_TEXT_FILE_BYTES = 512 * 1024;
 const MEDIA_TYPES = new Set(['image', 'video', 'audio', 'file']);
+
+function isTextType(contentType: string) {
+  return /^text\//.test(contentType) || /(json|csv|xml|yaml|markdown|javascript|x-www-form-urlencoded)/.test(contentType);
+}
 
 const PLATFORM_ENUM = ['line', 'whatsapp'];
 
@@ -249,6 +255,7 @@ export const connectorTools: ToolDefinition[] = [
         '',
         `storage: ${stats.backend}${stats.durable ? ' (durable)' : ' (in-memory — history is lost on every cold start)'}`,
         `capture: ${isCaptureEnabled() ? 'on' : 'off (CONNECTOR_CAPTURE=false)'}`,
+        `media archival: ${isR2Configured() ? 'on (Cloudflare R2)' : 'off — media served live from LINE, recent only'}`,
         `conversations captured: ${stats.conversations}`,
         `messages captured: ${stats.messages}`,
         `last captured message: ${stats.lastMessageAt ? formatTimestamp(stats.lastMessageAt) : 'none yet'}`,
@@ -258,7 +265,7 @@ export const connectorTools: ToolDefinition[] = [
       ];
       if (stats.error) lines.push('', `storage error: ${stats.error}`);
       if (!stats.durable) lines.push('', 'To keep history across requests, set CONNECTOR_DATABASE_URL to a Postgres connection string.');
-      return { text: lines.join('\n'), structured: { ...stats, capture: isCaptureEnabled(), channels } };
+      return { text: lines.join('\n'), structured: { ...stats, capture: isCaptureEnabled(), mediaArchival: isR2Configured(), channels } };
     },
   },
 
@@ -283,43 +290,79 @@ export const connectorTools: ToolDefinition[] = [
       if (!conversationId || !messageId) throw new Error('conversation_id and message_id are required.');
       const tenantId = enforcedTenant(args.tenant_id);
 
-      const conversation = await getConversation(conversationId, tenantId);
-      if (!conversation) return imageError(`No conversation found with id "${conversationId}".`);
-      if (conversation.platform !== 'line') return imageError('Only LINE images can be fetched right now.');
+      const located = await locateMedia(conversationId, messageId, tenantId);
+      if ('error' in located) return imageError(located.error);
+      const { conversation, target } = located;
 
-      // Confirm the id really belongs to this conversation and is inbound media —
-      // so this tool can only reach images a client actually sent here, not an
-      // arbitrary platform message id.
-      const messages = await getMessages({ conversationId, tenantId, limit: 1000 });
-      const target = messages.find((message) => message.externalMessageId === messageId && message.direction === 'inbound' && MEDIA_TYPES.has(message.messageType));
-      if (!target) return imageError(`No fetchable media with id "${messageId}" in this conversation. Use the mediaId shown on an inbound image message.`);
-
-      const token = lineChannelToken(conversation.channelId);
-      if (!token) return imageError(`LINE channel "${conversation.channelId}" has no access token configured, so its media can't be fetched.`);
-
-      let media: { content: ArrayBuffer; contentType: string };
+      let media;
       try {
-        media = await downloadLineMessageContent(messageId, token);
+        media = await fetchMediaBytes(target);
       } catch (error) {
-        // LINE only keeps message content for a limited window; an old image is
-        // simply gone rather than an error worth surfacing as a crash.
-        return imageError(`Couldn't fetch that image from LINE — it may have expired. (${formatError(error)})`);
+        return imageError(`Couldn't fetch that image — it may have expired from LINE and isn't archived. (${formatError(error)})`);
       }
 
       const bytes = media.content.byteLength;
       if (bytes > MAX_IMAGE_BYTES) return imageError(`That image is ${(bytes / 1024 / 1024).toFixed(1)} MB, over the ${MAX_IMAGE_BYTES / 1024 / 1024} MB inline limit.`);
-      if (!media.contentType.startsWith('image/')) return imageError(`That message is not an image (content type: ${media.contentType}).`);
+      if (!media.contentType.startsWith('image/')) return imageError(`That message is not an image (content type: ${media.contentType}). Try get_file instead.`);
 
       const base64 = Buffer.from(media.content).toString('base64');
-      const caption = `Image from ${conversationLabel(conversation)}, sent by ${target.senderName || shortId(target.senderId) || 'client'} at ${formatTimestamp(target.at)}.`;
+      const caption = `Image from ${conversationLabel(conversation)}, sent by ${target.senderName || shortId(target.senderId) || 'client'} at ${formatTimestamp(target.at)}${media.source === 'r2' ? '' : ' (live from LINE)'}.`;
       return {
         text: caption,
-        structured: { conversationId, messageId, mimeType: media.contentType, bytes, sentAt: new Date(target.at).toISOString() },
+        structured: { conversationId, messageId, mimeType: media.contentType, bytes, sentAt: new Date(target.at).toISOString(), source: media.source },
         content: [
           { type: 'text', text: caption },
           { type: 'image', data: base64, mimeType: media.contentType },
         ],
       };
+    },
+  },
+
+  {
+    name: 'get_file',
+    title: 'Open a file from a conversation',
+    description:
+      'Fetch a non-image file a client sent on LINE (a document, PDF, text/CSV, audio). Pass the conversation_id and the message\'s `mediaId`. Text-based files are returned as text you can read; images are handled by get_image instead. Served from durable storage when archived, otherwise live from LINE while it still retains the media.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        conversation_id: { type: 'string', description: 'The conversation the file was sent in.' },
+        message_id: { type: 'string', description: 'The file message\'s mediaId, from get_conversation / latest_context.' },
+        tenant_id: tenantProperty,
+      },
+      required: ['conversation_id', 'message_id'],
+      additionalProperties: false,
+    },
+    async handler(args) {
+      const conversationId = readString(args.conversation_id);
+      const messageId = readString(args.message_id);
+      if (!conversationId || !messageId) throw new Error('conversation_id and message_id are required.');
+      const located = await locateMedia(conversationId, messageId, enforcedTenant(args.tenant_id));
+      if ('error' in located) return imageError(located.error);
+      const { conversation, target } = located;
+
+      let media;
+      try {
+        media = await fetchMediaBytes(target);
+      } catch (error) {
+        return imageError(`Couldn't fetch that file — it may have expired from LINE and isn't archived. (${formatError(error)})`);
+      }
+
+      const bytes = media.content.byteLength;
+      const label = `File from ${conversationLabel(conversation)}, sent by ${target.senderName || shortId(target.senderId) || 'client'} at ${formatTimestamp(target.at)} · ${media.contentType} · ${(bytes / 1024).toFixed(0)} KB.`;
+      const structured = { conversationId, messageId, mimeType: media.contentType, bytes, sentAt: new Date(target.at).toISOString(), source: media.source };
+
+      if (media.contentType.startsWith('image/')) {
+        const base64 = Buffer.from(media.content).toString('base64');
+        return { text: label, structured, content: [{ type: 'text', text: label }, { type: 'image', data: base64, mimeType: media.contentType }] };
+      }
+      if (isTextType(media.contentType) && bytes <= MAX_TEXT_FILE_BYTES) {
+        const text = Buffer.from(media.content).toString('utf8');
+        return { text: `${label}\n\n${text}`, structured: { ...structured, textLength: text.length } };
+      }
+      // Binary the model can't read inline (a PDF, a zip). Report it rather than
+      // dumping base64 that no client renders reliably.
+      return { text: `${label}\n\nThis file type can't be shown inline here. It is ${media.source === 'r2' ? 'archived durably' : 'still available live from LINE'}.`, structured };
     },
   },
 ];
@@ -328,12 +371,17 @@ function imageError(message: string): ToolOutput {
   return { text: message, structured: { error: message } };
 }
 
-function lineChannelToken(channelId: string): string | undefined {
-  try {
-    return getTenantChannelConfig(channelId).line?.channelAccessToken || undefined;
-  } catch {
-    return undefined;
-  }
+// Resolve and validate a media reference: the message id must belong to this
+// conversation as inbound media, so a tool can only reach media actually sent
+// here — not an arbitrary platform id.
+async function locateMedia(conversationId: string, messageId: string, tenantId?: string): Promise<{ conversation: ConversationSummary; target: StoredMessage } | { error: string }> {
+  const conversation = await getConversation(conversationId, tenantId);
+  if (!conversation) return { error: `No conversation found with id "${conversationId}".` };
+  if (conversation.platform !== 'line') return { error: 'Only LINE media can be fetched right now.' };
+  const messages = await getMessages({ conversationId, tenantId, limit: 1000 });
+  const target = messages.find((message) => message.externalMessageId === messageId && message.direction === 'inbound' && MEDIA_TYPES.has(message.messageType));
+  if (!target) return { error: `No fetchable media with id "${messageId}" in this conversation. Use the mediaId shown on a media message.` };
+  return { conversation, target };
 }
 
 function formatError(error: unknown) {

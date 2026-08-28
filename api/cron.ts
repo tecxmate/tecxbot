@@ -12,6 +12,8 @@ import { buildWatchlistBrief } from '../src/botSystems/mcpBrief.js';
 import { buildDailyOpsReport } from '../src/ops/companyOps.js';
 import { getOpsConfig } from '../src/ops/config.js';
 import { pruneOlderThan, storeBackend } from '../src/core/conversationStore.js';
+import { archivePendingMedia } from '../src/connector/media.js';
+import { isR2Configured } from '../src/core/r2.js';
 import { getDueBriefReminders, markBriefReminderSent } from '../src/core/personalProfileStore.js';
 import { resolveTenantChannel } from '../src/core/tenantStore.js';
 import { sendFacebookUpdate } from '../src/platforms/facebook/client.js';
@@ -20,11 +22,15 @@ import { pushLineMessage } from '../src/platforms/line/client.js';
 // The reminder sweep is the slow one; it sets the ceiling for all jobs.
 export const config = { maxDuration: 300 };
 
-const JOBS = ['line-reminders', 'ops-daily-report', 'connector-prune'] as const;
+const JOBS = ['line-reminders', 'ops-daily-report', 'connector-prune', 'archive-media'] as const;
 type Job = (typeof JOBS)[number];
 
 const DEFAULT_RETENTION_DAYS = 90;
 const MS_PER_DAY = 86_400_000;
+// Media is only archived while LINE still holds it; look back a couple of days
+// so a lagging schedule still catches recent media.
+const ARCHIVE_WINDOW_MS = 2 * MS_PER_DAY;
+const ARCHIVE_MAX_BYTES = 25 * 1024 * 1024;
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'GET' && req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
@@ -37,7 +43,25 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   if (job === 'line-reminders') return runLineReminders(req, res);
   if (job === 'connector-prune') return runConnectorPrune(req, res);
+  if (job === 'archive-media') return runArchiveMedia(req, res);
   return runOpsDailyReport(req, res);
+}
+
+async function runArchiveMedia(req: VercelRequest, res: VercelResponse) {
+  if (!isR2Configured()) {
+    return res.status(200).json({ ok: true, job: 'archive-media', skipped: 'R2 not configured (set R2_ACCOUNT_ID/R2_ENDPOINT, R2_BUCKET, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY)' });
+  }
+  if (storeBackend() !== 'postgres') {
+    return res.status(200).json({ ok: true, job: 'archive-media', skipped: 'in-memory store: nothing durable to archive against' });
+  }
+  const limit = Math.min(100, Math.max(1, Number(firstQueryValue(req.query.limit)) || 25));
+  try {
+    const result = await archivePendingMedia({ sinceMs: Date.now() - ARCHIVE_WINDOW_MS, limit, maxBytes: ARCHIVE_MAX_BYTES });
+    return res.status(200).json({ ok: true, job: 'archive-media', ...result });
+  } catch (error) {
+    console.error('[cron:archive-media] Failed:', error);
+    return res.status(500).json({ ok: false, job: 'archive-media', error: formatError(error) });
+  }
 }
 
 async function runConnectorPrune(req: VercelRequest, res: VercelResponse) {
