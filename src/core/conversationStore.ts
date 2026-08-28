@@ -49,6 +49,8 @@ export type StoredMessage = {
   externalMessageId?: string;
   text: string;
   at: number;
+  /** R2 object key once the media has been archived; absent until then. */
+  mediaKey?: string;
 };
 
 export type ConversationSummary = {
@@ -169,6 +171,22 @@ export async function pruneOlderThan(cutoffMs: number): Promise<PruneResult> {
   return driver().prune(cutoffMs);
 }
 
+const MEDIA_MESSAGE_TYPES = ['image', 'file', 'audio'];
+
+/**
+ * Inbound media messages captured at or after `sinceMs` that have a platform id
+ * but haven't been archived yet — the archive job's work queue. Bounded by
+ * `sinceMs` because platform media is only fetchable for a limited window.
+ */
+export async function listUnarchivedMedia(input: { sinceMs: number; limit?: number }): Promise<StoredMessage[]> {
+  return driver().listUnarchivedMedia({ sinceMs: input.sinceMs, limit: clamp(input.limit ?? 25, 1, 200) });
+}
+
+/** Record the R2 object key for a message once its media has been archived. */
+export async function setMediaKey(messageId: string, mediaKey: string): Promise<void> {
+  await driver().setMediaKey(messageId, mediaKey);
+}
+
 // ---- normalization ----
 
 type ConversationRow = Omit<ConversationSummary, 'messageCount' | 'participants'>;
@@ -224,6 +242,8 @@ type Driver = {
   searchMessages(query: SearchQuery): Promise<StoredMessage[]>;
   stats(tenantId?: string): Promise<StoreStats>;
   prune(cutoffMs: number): Promise<PruneResult>;
+  listUnarchivedMedia(input: { sinceMs: number; limit: number }): Promise<StoredMessage[]>;
+  setMediaKey(messageId: string, mediaKey: string): Promise<void>;
 };
 
 function driver(): Driver {
@@ -311,6 +331,25 @@ const memoryDriver: Driver = {
       }
     }
     return { messagesDeleted, conversationsDeleted };
+  },
+
+  async listUnarchivedMedia({ sinceMs, limit }) {
+    const out: StoredMessage[] = [];
+    for (const messages of memoryMessages.values()) {
+      for (const message of messages) {
+        if (message.direction === 'inbound' && MEDIA_MESSAGE_TYPES.includes(message.messageType) && message.externalMessageId && !message.mediaKey && message.at >= sinceMs) {
+          out.push(message);
+        }
+      }
+    }
+    return out.sort((a, b) => b.at - a.at).slice(0, limit);
+  },
+
+  async setMediaKey(messageId, mediaKey) {
+    for (const messages of memoryMessages.values()) {
+      const target = messages.find((message) => message.id === messageId);
+      if (target) { target.mediaKey = mediaKey; return; }
+    }
   },
 };
 
@@ -403,6 +442,10 @@ function ensureSchema() {
     { query: `create index if not exists connector_messages_conversation_idx on connector_messages (conversation_id, at_ms desc)` },
     { query: `create index if not exists connector_messages_recent_idx on connector_messages (at_ms desc)` },
     { query: `create unique index if not exists connector_messages_external_idx on connector_messages (conversation_id, external_message_id) where external_message_id is not null` },
+    // Added after the initial release; `if not exists` makes it a no-op on
+    // databases that already have the column.
+    { query: `alter table connector_messages add column if not exists media_key text` },
+    { query: `create index if not exists connector_messages_unarchived_idx on connector_messages (at_ms desc) where media_key is null and external_message_id is not null` },
   ]).catch((error) => {
     schemaPromise = undefined; // let the next request retry a transient failure
     throw error;
@@ -558,6 +601,27 @@ const postgresDriver: Driver = {
     );
     return { messagesDeleted: deletedMessages.length, conversationsDeleted: deletedConversations.length };
   },
+
+  async listUnarchivedMedia({ sinceMs, limit }) {
+    await ensureSchema();
+    const rows = await sql<Record<string, unknown>>(
+      `select * from connector_messages
+        where direction = 'inbound'
+          and message_type = any($1::text[])
+          and external_message_id is not null
+          and media_key is null
+          and at_ms >= $2
+        order by at_ms desc
+        limit $3`,
+      [MEDIA_MESSAGE_TYPES, sinceMs, limit],
+    );
+    return rows.map(toMessage);
+  },
+
+  async setMediaKey(messageId, mediaKey) {
+    await ensureSchema();
+    await sql(`update connector_messages set media_key = $2 where id = $1`, [messageId, mediaKey]);
+  },
 };
 
 // Message counts and participant lists are derived from the message table
@@ -625,6 +689,7 @@ function toMessage(row: Record<string, unknown>): StoredMessage {
     externalMessageId: row.external_message_id ? String(row.external_message_id) : undefined,
     text: String(row.text ?? ''),
     at: toNumber(row.at_ms),
+    mediaKey: row.media_key ? String(row.media_key) : undefined,
   };
 }
 

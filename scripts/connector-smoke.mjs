@@ -26,7 +26,8 @@ delete process.env.CONNECTOR_TIMEZONE;
 const { resolve } = await import('node:path');
 const { pathToFileURL } = await import('node:url');
 const DIST = pathToFileURL(resolve(process.env.SMOKE_DIST || 'dist')).href;
-const { recordMessage, buildConversationId, pruneOlderThan } = await import(`${DIST}/src/core/conversationStore.js`);
+const { recordMessage, buildConversationId, pruneOlderThan, listUnarchivedMedia, setMediaKey } = await import(`${DIST}/src/core/conversationStore.js`);
+const { signRequest } = await import(`${DIST}/src/core/r2.js`);
 const { handleMcpMessage } = await import(`${DIST}/src/connector/mcpServer.js`);
 const { handleWhatsappWebhook } = await import(`${DIST}/src/platforms/whatsapp/webhook.js`);
 const { authorizeConnector } = await import(`${DIST}/src/connector/auth.js`);
@@ -219,9 +220,9 @@ await test('notifications get no response', async () => {
   assertEqual(await handleMcpMessage({ jsonrpc: '2.0', method: 'notifications/initialized' }), undefined, 'response');
 });
 
-await test('tools/list advertises six read-only tools', async () => {
+await test('tools/list advertises seven read-only tools', async () => {
   const { tools } = await rpc('tools/list');
-  assertEqual(tools.length, 6, 'tool count');
+  assertEqual(tools.length, 7, 'tool count');
   assert(tools.some((tool) => tool.name === 'get_image'), 'get_image is advertised');
   assert(tools.every((tool) => tool.annotations.readOnlyHint), 'every tool is annotated read-only');
   assert(tools.every((tool) => tool.inputSchema.type === 'object'), 'every tool has an object schema');
@@ -336,7 +337,7 @@ await test('a wrong token is rejected', async () => {
 await test('a bearer header authenticates', async () => {
   const response = await httpCall({ headers: AUTH, body: jsonRpc('tools/list') });
   assertEqual(response.code, 200, 'status');
-  assertEqual(response.body.result.tools.length, 6, 'tool count');
+  assertEqual(response.body.result.tools.length, 7, 'tool count');
 });
 
 await test('a query-param key authenticates, for clients that only take a URL', async () => {
@@ -512,6 +513,23 @@ await test('resolveSqlEndpoint derives the HTTP endpoint from the connection str
   );
 });
 
+await test('R2 SigV4 signer matches the published AWS test vector', async () => {
+  // AWS docs "GET Object" SigV4 example — a wrong signer would break every R2
+  // request, and the live round trip only happens in production, so pin it here.
+  const headers = signRequest({
+    method: 'GET',
+    url: 'https://examplebucket.s3.amazonaws.com/test.txt',
+    extraHeaders: { range: 'bytes=0-9' },
+    accessKeyId: 'AKIAIOSFODNN7EXAMPLE',
+    secretAccessKey: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY',
+    now: new Date('2013-05-24T00:00:00Z'),
+    region: 'us-east-1',
+    service: 's3',
+  });
+  const signature = /Signature=([0-9a-f]+)/.exec(headers.Authorization)[1];
+  assertEqual(signature, 'f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41', 'AWS SigV4 GET example');
+});
+
 await test('prepareParam encodes params the way the Neon HTTP endpoint binds them', async () => {
   // Arrays must become Postgres array literals, or `= any($1::text[])` never
   // matches — this is the bug the encoder exists to prevent.
@@ -582,6 +600,53 @@ await test('get_image reaches the fetch step and reports an unconfigured channel
   const result = await callTool('get_image', { conversation_id: IMG_CONV, message_id: 'linemsg-777' });
   assert(!result.isError, 'graceful, not a crash');
   assertIncludes(result.content[0].text, 'no access token', 'stops at the channel token step');
+});
+
+await test('get_file validates ids and reports an unfetchable file gracefully', async () => {
+  assertEqual((await callTool('get_file', { conversation_id: IMG_CONV })).isError, true, 'missing message_id');
+  assertIncludes((await callTool('get_file', { conversation_id: IMG_CONV, message_id: 'nope' })).content[0].text, 'No fetchable media', 'unknown id');
+  const result = await callTool('get_file', { conversation_id: IMG_CONV, message_id: 'linemsg-777' });
+  assert(!result.isError, 'graceful, not a crash');
+});
+
+// ---- media archival ----
+// R2 isn't configured in tests, so this covers the store-side archival queue
+// (the R2 round trip runs in production). The signer itself is checked below.
+
+console.log('\nmedia archival');
+
+await recordMessage({
+  tenantId: 'demo', channelId: 'tecxmate', platform: 'line', conversationType: 'group',
+  externalConversationId: 'C_arch', title: 'Archive Group', direction: 'inbound',
+  senderId: 'U_a', senderName: 'Archie', text: '[file: quote.pdf]', messageType: 'file',
+  externalMessageId: 'linemsg-arch', at: now - 30_000,
+});
+
+await test('listUnarchivedMedia surfaces pending media, setMediaKey clears it', async () => {
+  const before = await listUnarchivedMedia({ sinceMs: now - 3_600_000, limit: 50 });
+  const mine = before.find((m) => m.externalMessageId === 'linemsg-arch');
+  assert(mine, 'the unarchived file is queued');
+  assertEqual(mine.mediaKey, undefined, 'no media key yet');
+  await setMediaKey(mine.id, 'line/tecxmate/linemsg-arch');
+  const after = await listUnarchivedMedia({ sinceMs: now - 3_600_000, limit: 50 });
+  assert(!after.some((m) => m.externalMessageId === 'linemsg-arch'), 'archived media leaves the queue');
+});
+
+await test('listUnarchivedMedia respects the recency window', async () => {
+  await recordMessage({
+    tenantId: 'demo', channelId: 'tecxmate', platform: 'line', conversationType: 'group',
+    externalConversationId: 'C_arch', direction: 'inbound', senderName: 'Archie',
+    text: '[image]', messageType: 'image', externalMessageId: 'linemsg-ancient', at: now - 10 * 86_400_000,
+  });
+  const recent = await listUnarchivedMedia({ sinceMs: now - 3_600_000, limit: 50 });
+  assert(!recent.some((m) => m.externalMessageId === 'linemsg-ancient'), 'media older than the window is excluded');
+});
+
+await test('archive-media cron skips when R2 is not configured', async () => {
+  process.env.CRON_SECRET = 'cron-secret';
+  const response = await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'archive-media', secret: 'cron-secret' } });
+  assertEqual(response.code, 200, 'status');
+  assertIncludes(response.body.skipped, 'R2 not configured', 'explains the skip');
 });
 
 // ---- claude assistant ----
