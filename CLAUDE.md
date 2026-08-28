@@ -9,6 +9,10 @@ functions (`api/*.ts`), plus a **Claude connector** (`api/mcp.ts`,
 `src/connector/`) that captures client conversations into a durable log and
 serves them to Claude over MCP. See `docs/claude-connector.md`.
 
+**Deploying or picking this up?** Read `docs/deployment-status.md` first — it
+records what is live, what is built but dormant (Cloudflare R2 media, Claude-in-
+LINE), and the exact remaining setup steps.
+
 ## Commands
 
 - `npm run build` — typecheck (`tsc`, no emit).

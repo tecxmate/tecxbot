@@ -738,6 +738,124 @@ await test('connector-prune honours a disabling ?days=0', async () => {
   assertIncludes(response.body.skipped, 'disabled', 'retention disabled message');
 });
 
+// ---- PM reply (send_line_reply) ----
+// The actual LINE push needs the live messaging API, so these cover the
+// fail-closed gating and routing up to the send boundary (the tecxmate channel
+// has no token in the test env, so an allowed reply stops gracefully there).
+
+console.log('\nPM reply');
+
+// A WhatsApp conversation to prove replies are LINE-only.
+await recordMessage({
+  tenantId: 'demo', channelId: 'default-whatsapp', platform: 'whatsapp', conversationType: 'direct',
+  externalConversationId: 'wa_555', title: 'WA Contact', direction: 'inbound',
+  senderId: 'wa_555', senderName: 'Wanda', text: 'hello', messageType: 'text',
+  externalMessageId: 'wa-reply-1', at: now - 45_000,
+});
+const WA_CONV = buildConversationId({ platform: 'whatsapp', channelId: 'default-whatsapp', conversationType: 'direct', externalConversationId: 'wa_555' });
+
+await test('send_line_reply is hidden and refused while replies are off (fail closed)', async () => {
+  delete process.env.CONNECTOR_ALLOW_REPLY;
+  const tools = (await rpc('tools/list')).tools.map((t) => t.name);
+  assert(!tools.includes('send_line_reply'), 'not advertised when disabled');
+  const result = await callTool('send_line_reply', { conversation_id: ACME, text: 'hi' });
+  assertEqual(result.structuredContent.sent, false, 'did not send');
+  assertIncludes(result.content[0].text, 'CONNECTOR_ALLOW_REPLY', 'explains how to enable');
+});
+
+await test('enabling replies advertises send_line_reply as a write tool', async () => {
+  process.env.CONNECTOR_ALLOW_REPLY = 'true';
+  const tool = (await rpc('tools/list')).tools.find((t) => t.name === 'send_line_reply');
+  assert(tool, 'advertised when enabled');
+  assertEqual(tool.annotations.readOnlyHint, false, 'marked as not read-only');
+  // The read tools keep their read-only annotation.
+  const readTool = (await rpc('tools/list')).tools.find((t) => t.name === 'get_conversation');
+  assertEqual(readTool.annotations.readOnlyHint, true, 'read tools stay read-only');
+});
+
+await test('send_line_reply validates required args', async () => {
+  process.env.CONNECTOR_ALLOW_REPLY = 'true';
+  assertEqual((await callTool('send_line_reply', { conversation_id: ACME })).isError, true, 'missing text');
+  assertEqual((await callTool('send_line_reply', { text: 'hi' })).isError, true, 'missing conversation_id');
+});
+
+await test('send_line_reply refuses an unknown or non-LINE conversation', async () => {
+  process.env.CONNECTOR_ALLOW_REPLY = 'true';
+  assertIncludes((await callTool('send_line_reply', { conversation_id: 'line:tecxmate:group:nope', text: 'hi' })).content[0].text, 'No conversation found', 'unknown conversation');
+  const wa = await callTool('send_line_reply', { conversation_id: WA_CONV, text: 'hi' });
+  assertEqual(wa.structuredContent.reason, 'not_line', 'WhatsApp is rejected');
+});
+
+await test('send_line_reply enforces the conversation allowlist', async () => {
+  process.env.CONNECTOR_ALLOW_REPLY = 'true';
+  process.env.CONNECTOR_REPLY_CONVERSATION_IDS = 'line:tecxmate:group:somewhere-else';
+  const blocked = await callTool('send_line_reply', { conversation_id: ACME, text: 'hi' });
+  assertEqual(blocked.structuredContent.reason, 'not_allowed', 'not on the allowlist');
+  delete process.env.CONNECTOR_REPLY_CONVERSATION_IDS;
+});
+
+await test('an allowed reply routes to the channel and stops at the missing token', async () => {
+  // Enabled + allowed + LINE + conversation found → the one thing missing in the
+  // test env is the channel token, so it fails safe there rather than sending.
+  process.env.CONNECTOR_ALLOW_REPLY = 'true';
+  const result = await callTool('send_line_reply', { conversation_id: ACME, text: 'On it — I\'ll confirm the invoice address.' });
+  assertEqual(result.structuredContent.sent, false, 'nothing sent without a token');
+  assertEqual(result.structuredContent.reason, 'no_token', 'stops at the channel token step');
+});
+
+await test('connector_status reports reply capability both ways', async () => {
+  delete process.env.CONNECTOR_ALLOW_REPLY;
+  assertIncludes((await callTool('connector_status')).content[0].text, 'replies: off', 'off by default');
+  process.env.CONNECTOR_ALLOW_REPLY = 'true';
+  const on = await callTool('connector_status');
+  assertIncludes(on.content[0].text, 'replies: on', 'on when enabled');
+  assertEqual(on.structuredContent.replies.enabled, true, 'structured reply state');
+  assertEqual(on.structuredContent.replies.mode, 'direct', 'direct mode by default');
+  delete process.env.CONNECTOR_ALLOW_REPLY;
+});
+
+// Review (draft-for-approval) mode: replies are posted into an internal group
+// for a human to approve, and the client is never written to.
+const EXEC = 'line:tecxmate:group:C_exec';
+await recordMessage({
+  tenantId: 'demo', channelId: 'tecxmate', platform: 'line', conversationType: 'group',
+  externalConversationId: 'C_exec', title: 'tecx-exec', direction: 'inbound',
+  senderId: 'U_brian', senderName: 'Brian', text: 'ready to review', messageType: 'text',
+  externalMessageId: 'line-exec-1', at: now - 30_000,
+});
+
+await test('review mode routes the draft to the review group, not the client', async () => {
+  process.env.CONNECTOR_ALLOW_REPLY = 'true';
+  process.env.CONNECTOR_REVIEW_CONVERSATION_ID = EXEC;
+  // Target is the client group (ACME); the draft is destined for the exec group.
+  // Both are on the token-less tecxmate channel in tests, so it stops at the
+  // review group's token step — proving it routed there, not to the client.
+  const result = await callTool('send_line_reply', { conversation_id: ACME, text: 'Proposed answer for the client.' });
+  assertEqual(result.structuredContent.reason, 'review_no_token', 'stops at the review group token step');
+  delete process.env.CONNECTOR_REVIEW_CONVERSATION_ID;
+  delete process.env.CONNECTOR_ALLOW_REPLY;
+});
+
+await test('review mode explains an uncaptured review group', async () => {
+  process.env.CONNECTOR_ALLOW_REPLY = 'true';
+  process.env.CONNECTOR_REVIEW_CONVERSATION_ID = 'line:tecxmate:group:C_not_seen';
+  const result = await callTool('send_line_reply', { conversation_id: ACME, text: 'hi' });
+  assertEqual(result.structuredContent.reason, 'review_not_found', 'review group not captured yet');
+  delete process.env.CONNECTOR_REVIEW_CONVERSATION_ID;
+  delete process.env.CONNECTOR_ALLOW_REPLY;
+});
+
+await test('connector_status reports review mode', async () => {
+  process.env.CONNECTOR_ALLOW_REPLY = 'true';
+  process.env.CONNECTOR_REVIEW_CONVERSATION_ID = EXEC;
+  const status = await callTool('connector_status');
+  assertIncludes(status.content[0].text, 'review mode', 'names review mode');
+  assertEqual(status.structuredContent.replies.mode, 'review', 'structured review mode');
+  assertEqual(status.structuredContent.replies.reviewConversationId, EXEC, 'names the review group');
+  delete process.env.CONNECTOR_REVIEW_CONVERSATION_ID;
+  delete process.env.CONNECTOR_ALLOW_REPLY;
+});
+
 // ---- result ----
 
 console.log(`\n${passed} passed, ${failures} failed`);
