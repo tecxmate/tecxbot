@@ -70,24 +70,27 @@ tecxbot → Environment Variables** (see `.env.example`):
 
 ```text
 CONNECTOR_ALLOW_REPLY=true                 # fail-closed: off unless this is set
-CONNECTOR_REPLY_MONTHLY_CAP=150            # hard backstop on LINE push quota
+CONNECTOR_REPLY_MONTHLY_CAP=180            # backstop below the LINE free tier (200/month)
 CONNECTOR_REPLY_SENDER_NAME=TECXMATE PM    # optional; label for the PM's messages
 
-# Review mode — pushes go to the tecx-exec group for approval; the client is never
-# written to. Use that group's conversation id (find it with list_conversations
-# after the bot is added to it and one message is seen):
-CONNECTOR_REVIEW_CONVERSATION_ID=line:tecxmate:group:C_your_exec_group
+# Review mode — pushes go to the exec group ("tecx-boss") for approval; the client
+# is never written to. This is that group's captured conversation id:
+CONNECTOR_REVIEW_CONVERSATION_ID=line:tecxmate:group:C985633fca4271ba1af8a880cee989ba0
 
 # Direct-to-client instead? Leave CONNECTOR_REVIEW_CONVERSATION_ID unset and scope
-# the target so the PM can only post to the client group:
-# CONNECTOR_REPLY_CONVERSATION_IDS=line:tecxmate:group:C985633fca4271ba1af8a880cee989ba0
+# the target to the client group's id (find it with list_conversations once the
+# client group is set up — it is not the tecx-boss id above):
+# CONNECTOR_REPLY_CONVERSATION_IDS=line:tecxmate:group:C_your_client_group
 ```
 
 Set-up notes for the push tiers:
-1. Add the bot (the TECXMATE LINE account) to your **tecx-exec** group and send
-   one message there so it gets captured.
-2. Run `list_conversations` in your Claude client to get that group's
-   `conversation_id`, and put it in `CONNECTOR_REVIEW_CONVERSATION_ID`.
+1. The exec group ("tecx-boss") is already captured — its id is in the block
+   above. (For a different exec group: add the TECXMATE bot to it, send one
+   message, and find its id with `list_conversations`.)
+2. Review mode drafts a reply *for a client message*, so it only does real work
+   once a **client group** exists (add the bot there, send a message, find its id
+   with `list_conversations`). Until then you can smoke-test by targeting
+   tecx-boss itself — the draft simply lands in tecx-boss.
 3. Redeploy, then **disconnect and reconnect** the connector in your Claude client
    so it picks up `send_line_reply`.
 
