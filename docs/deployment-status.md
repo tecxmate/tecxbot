@@ -13,8 +13,11 @@ _As of the Cloudflare R2 media work (`#6`). Update this note as things change._
   connected to the operator's Claude app. `src/connector/`, `api/mcp.ts`.
 - **Capture → durable storage.** LINE messages are captured to Postgres (Neon).
   `connector_status` confirmed `storage: postgres (durable)`, capture on.
-- **Primary client group** (the one CLAUDE.md targets):
-  `line:tecxmate:group:C985633fca4271ba1af8a880cee989ba0`.
+- **Exec / review group** ("tecx-boss", the operator's internal group):
+  `line:tecxmate:group:C985633fca4271ba1af8a880cee989ba0`. Used as the PM's
+  review target (see §4). **No client group is set up yet** — when one is added,
+  find its id with `list_conversations` and point CLAUDE.md + the client
+  references at it.
 - **LINE `tecxmate` channel** webhook is set to
   `…/api/line-webhook?channel=tecxmate`, and the account's **Chat toggle is OFF**
   (required — with Chat on, a LINE OA auto-leaves groups).
@@ -63,15 +66,20 @@ reconnect** the connector in the Claude app so it picks up the new tools.
   duplicates to avoid confusion.
 
 ### 4. (Optional) Turn on the TECXMATE PM reply
-Let Claude on your own plan answer as the PM — no API key. **Start in review
-mode**, where drafts go to a tecx-exec group for you + Brian to approve (the
-client is never written to automatically).
-1. Add the bot to a **tecx-exec** group, send one message there, and get its
-   conversation id via `list_conversations`.
-2. In Vercel, set `CONNECTOR_ALLOW_REPLY=true` and
-   `CONNECTOR_REVIEW_CONVERSATION_ID=line:tecxmate:group:<exec group id>`. Redeploy.
-   (For direct-to-client instead, leave the review var unset and set
-   `CONNECTOR_REPLY_CONVERSATION_IDS` to the client group.)
+Let Claude on your own plan answer as the PM — no API key. **Default is
+draft-in-chat** (Claude proposes the reply in the Claude chat, you send it — zero
+LINE quota); the steps below add the optional push tiers. In **review mode**,
+pushes go to the exec group ("tecx-boss") for approval; the client is never
+written to automatically. Note the PM flow only does real work once a **client
+group** exists — none is set up yet.
+1. The exec group is already captured:
+   `line:tecxmate:group:C985633fca4271ba1af8a880cee989ba0` (tecx-boss).
+2. In Vercel: `CONNECTOR_ALLOW_REPLY=true`,
+   `CONNECTOR_REVIEW_CONVERSATION_ID=line:tecxmate:group:C985633fca4271ba1af8a880cee989ba0`,
+   and `CONNECTOR_REPLY_MONTHLY_CAP` a bit under the LINE free tier (quota is
+   200/month, so e.g. 180). Redeploy. (For direct-to-client instead, leave the
+   review var unset and set `CONNECTOR_REPLY_CONVERSATION_IDS` to the client
+   group once it exists.)
 3. In Claude Desktop / Claude Code, connect **both** the tecxbot connector and the
    **Jira (Atlassian)** connector, then reconnect tecxbot so `send_line_reply`
    appears.
