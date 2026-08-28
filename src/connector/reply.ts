@@ -9,7 +9,7 @@
 // the message is the bot's own messaging credential (needed to send any LINE
 // message at all), never an AI key, and it stays server-side.
 
-import { getConversation, recordMessage } from '../core/conversationStore.js';
+import { getConversation, recordMessage, type ConversationSummary } from '../core/conversationStore.js';
 import { getTenantChannelConfig } from '../core/tenantStore.js';
 import { pushLineMessage } from '../platforms/line/client.js';
 
@@ -21,6 +21,21 @@ export function isReplyEnabled(): boolean {
 /** Display name recorded (and understood by the PM) for outbound replies. */
 export function replySenderName(): string {
   return process.env.CONNECTOR_REPLY_SENDER_NAME?.trim() || 'TECXMATE PM';
+}
+
+/**
+ * Review (draft-for-approval) mode. When a review conversation id is set, a
+ * reply is never delivered to the client: instead the draft is posted into this
+ * internal group (e.g. tecx-exec) for a human to read and approve. This is an
+ * enforced gate — in review mode there is no code path from the PM to a client
+ * conversation, so approval can't be skipped. Unset = direct send.
+ */
+export function reviewConversationId(): string | undefined {
+  return process.env.CONNECTOR_REVIEW_CONVERSATION_ID?.trim() || undefined;
+}
+
+export function isReviewMode(): boolean {
+  return Boolean(reviewConversationId());
 }
 
 /**
@@ -40,34 +55,81 @@ export function isConversationReplyable(conversationId: string): boolean {
   return allow.length === 0 || allow.includes(conversationId);
 }
 
-export type ReplyReason = 'disabled' | 'empty' | 'not_found' | 'not_line' | 'not_allowed' | 'no_token';
-export type ReplyOutcome = { ok: true; to: string; at: number } | { ok: false; reason: ReplyReason };
+export type ReplyReason =
+  | 'disabled' | 'empty' | 'not_found' | 'not_line' | 'not_allowed' | 'no_token'
+  | 'review_not_found' | 'review_not_line' | 'review_no_token';
+export type ReplyOutcome =
+  | { ok: true; mode: 'direct'; conversationId: string; to: string; at: number }
+  | { ok: true; mode: 'review'; conversationId: string; reviewConversationId: string; to: string; at: number }
+  | { ok: false; reason: ReplyReason };
 
 /**
- * Send a text reply into a LINE conversation and record it as an outbound
- * message so the transcript stays coherent and the PM can see it already
- * answered. Every gate returns before any network call, so a misconfigured
- * deployment fails safe rather than sending.
+ * Send the PM's reply. In direct mode it is delivered to the client conversation
+ * and recorded as outbound. In review mode (CONNECTOR_REVIEW_CONVERSATION_ID
+ * set) it is instead posted as a draft into the internal review group for a
+ * human to approve — the client conversation is never written to. Every gate
+ * returns before any network call, so a misconfigured deployment fails safe.
  */
 export async function sendLineReply(input: { conversationId: string; text: string; tenantId?: string }): Promise<ReplyOutcome> {
   if (!isReplyEnabled()) return { ok: false, reason: 'disabled' };
   const text = input.text.trim();
   if (!text) return { ok: false, reason: 'empty' };
 
-  const conversation = await getConversation(input.conversationId, input.tenantId);
-  if (!conversation) return { ok: false, reason: 'not_found' };
-  if (conversation.platform !== 'line') return { ok: false, reason: 'not_line' };
-  if (!isConversationReplyable(conversation.conversationId)) return { ok: false, reason: 'not_allowed' };
+  const target = await getConversation(input.conversationId, input.tenantId);
+  if (!target) return { ok: false, reason: 'not_found' };
+  if (target.platform !== 'line') return { ok: false, reason: 'not_line' };
+  if (!isConversationReplyable(target.conversationId)) return { ok: false, reason: 'not_allowed' };
 
-  const token = channelToken(conversation.channelId);
+  const reviewId = reviewConversationId();
+  if (reviewId) return draftForReview(target, text, reviewId, input.tenantId);
+  return deliverDirect(target, text);
+}
+
+// Direct: deliver to the client conversation and record it as outbound.
+async function deliverDirect(target: ConversationSummary, text: string): Promise<ReplyOutcome> {
+  const token = channelToken(target.channelId);
   if (!token) return { ok: false, reason: 'no_token' };
 
-  const to = conversation.externalConversationId;
+  const to = target.externalConversationId;
   await pushLineMessage(to, { text }, token);
   const at = Date.now();
+  await recordOutbound(target, text, at);
+  return { ok: true, mode: 'direct', conversationId: target.conversationId, to, at };
+}
 
-  // Best-effort: a failed capture must not make the tool report a send failure
-  // when the message actually went out.
+// Review: post the draft into the internal review group; never touch the client.
+async function draftForReview(target: ConversationSummary, text: string, reviewId: string, tenantId?: string): Promise<ReplyOutcome> {
+  const review = await getConversation(reviewId, tenantId);
+  if (!review) return { ok: false, reason: 'review_not_found' };
+  if (review.platform !== 'line') return { ok: false, reason: 'review_not_line' };
+  const token = channelToken(review.channelId);
+  if (!token) return { ok: false, reason: 'review_no_token' };
+
+  const to = review.externalConversationId;
+  const draft = formatDraft(target, text);
+  await pushLineMessage(to, { text: draft }, token);
+  const at = Date.now();
+  await recordOutbound(review, draft, at);
+  return { ok: true, mode: 'review', conversationId: target.conversationId, reviewConversationId: review.conversationId, to, at };
+}
+
+function formatDraft(target: ConversationSummary, text: string): string {
+  const label = target.title || target.externalConversationId;
+  return [
+    '📝 Draft reply — needs approval',
+    `For: ${label}`,
+    `(${target.conversationId})`,
+    '',
+    text,
+    '',
+    '— Reply here to revise. Once approved, post it in that client group to send.',
+  ].join('\n');
+}
+
+// Record an outbound message so the transcript (client or review group) stays
+// coherent. Best-effort: a failed capture must not make the tool report a send
+// failure when the message actually went out.
+async function recordOutbound(conversation: ConversationSummary, text: string, at: number): Promise<void> {
   try {
     await recordMessage({
       tenantId: conversation.tenantId,
@@ -88,8 +150,6 @@ export async function sendLineReply(input: { conversationId: string; text: strin
   } catch (error) {
     console.error('[connector-reply] sent but failed to record outbound reply:', error);
   }
-
-  return { ok: true, to, at };
 }
 
 function channelToken(channelId: string): string | undefined {

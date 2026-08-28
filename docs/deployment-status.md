@@ -63,14 +63,19 @@ reconnect** the connector in the Claude app so it picks up the new tools.
   duplicates to avoid confusion.
 
 ### 4. (Optional) Turn on the TECXMATE PM reply
-Let Claude on your own plan answer in the client group as the PM — no API key.
-1. In Vercel, set `CONNECTOR_ALLOW_REPLY=true` and
-   `CONNECTOR_REPLY_CONVERSATION_IDS=line:tecxmate:group:C985633fca4271ba1af8a880cee989ba0`
-   (scopes replies to just the client group). Redeploy.
-2. In Claude Desktop / Claude Code, connect **both** the tecxbot connector and the
+Let Claude on your own plan answer as the PM — no API key. **Start in review
+mode**, where drafts go to a tecx-exec group for you + Brian to approve (the
+client is never written to automatically).
+1. Add the bot to a **tecx-exec** group, send one message there, and get its
+   conversation id via `list_conversations`.
+2. In Vercel, set `CONNECTOR_ALLOW_REPLY=true` and
+   `CONNECTOR_REVIEW_CONVERSATION_ID=line:tecxmate:group:<exec group id>`. Redeploy.
+   (For direct-to-client instead, leave the review var unset and set
+   `CONNECTOR_REPLY_CONVERSATION_IDS` to the client group.)
+3. In Claude Desktop / Claude Code, connect **both** the tecxbot connector and the
    **Jira (Atlassian)** connector, then reconnect tecxbot so `send_line_reply`
    appears.
-3. Give Claude the PM prompt and run it. Full walkthrough: `docs/tecxmate-pm.md`.
+4. Give Claude the PM prompt and run it. Full walkthrough: `docs/tecxmate-pm.md`.
    Note: project tracking is **Jira** now, not Linear.
 
 ### 5. (Optional) Enable Claude-in-LINE

@@ -19,7 +19,7 @@ import {
 import { listConnectorChannels } from '../core/tenantStore.js';
 import { fetchMediaBytes } from './media.js';
 import { isR2Configured } from '../core/r2.js';
-import { isReplyEnabled, replyAllowlist, sendLineReply, type ReplyReason } from './reply.js';
+import { isReplyEnabled, isReviewMode, replyAllowlist, reviewConversationId, sendLineReply, type ReplyReason } from './reply.js';
 
 // A tool normally returns text; `content` lets it return richer MCP blocks
 // (e.g. an image), which the server uses in place of the wrapped text.
@@ -281,7 +281,7 @@ export const connectorTools: ToolDefinition[] = [
         structured: {
           ...stats,
           capture: isCaptureEnabled(),
-          replies: { enabled: isReplyEnabled(), allowlist: replyAllowlist() },
+          replies: { enabled: isReplyEnabled(), mode: isReviewMode() ? 'review' : 'direct', reviewConversationId: reviewConversationId() ?? null, allowlist: replyAllowlist() },
           mediaArchival: isR2Configured(),
           channels,
         },
@@ -293,14 +293,14 @@ export const connectorTools: ToolDefinition[] = [
     name: 'send_line_reply',
     title: 'Reply in a LINE conversation (as the PM)',
     description:
-      'Post a text message back into a LINE conversation, as the TECXMATE project manager (PM). This actually sends — everyone in the group sees it. Use it ONLY to answer a message that tags or is addressed to the PM, and ground the reply in the conversation and in project status from Jira. Do not invent dates, prices, or commitments; check Jira or say you will follow up. Available only when replying is enabled on this deployment (CONNECTOR_ALLOW_REPLY=true); otherwise the connector is read-only.',
+      'Reply to a LINE conversation as the TECXMATE project manager (PM), grounded in the conversation and in project status from Jira. Pass the CLIENT conversation_id you are answering. Behavior depends on deployment config: in direct mode it sends straight to that group (everyone sees it); in review/draft mode it instead posts the draft into an internal review group for a human to approve, and the client is never written to — connector_status shows which mode is active. Use it ONLY for a message that tags or is addressed to the PM. Do not invent dates, prices, or commitments; check Jira or say you will follow up. Available only when CONNECTOR_ALLOW_REPLY=true; otherwise the connector is read-only.',
     enabled: () => isReplyEnabled(),
     annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: true },
     inputSchema: {
       type: 'object',
       properties: {
-        conversation_id: { type: 'string', description: 'The conversation to reply into, e.g. "line:tecxmate:group:C1234abcd" (from latest_context / list_conversations).' },
-        text: { type: 'string', description: 'The message to send, as the PM. Concise and professional. Written verbatim to the group.' },
+        conversation_id: { type: 'string', description: 'The CLIENT conversation you are answering, e.g. "line:tecxmate:group:C1234abcd" (from latest_context / list_conversations). In review mode this is what the draft is labelled for, not where it is sent.' },
+        text: { type: 'string', description: 'The reply, as the PM. Concise and professional. In direct mode it is sent verbatim to the group; in review mode it is the draft a human approves.' },
         tenant_id: tenantProperty,
       },
       required: ['conversation_id', 'text'],
@@ -313,8 +313,12 @@ export const connectorTools: ToolDefinition[] = [
       if (!text) throw new Error('text is required.');
       const outcome = await sendLineReply({ conversationId, text, tenantId: enforcedTenant(args.tenant_id) });
       if (!outcome.ok) return replyError(outcome.reason, conversationId);
+      if (outcome.mode === 'review') {
+        const confirmation = `Draft posted to the review group for approval — nothing was sent to the client. Drafted for ${conversationId} at ${formatTimestamp(outcome.at)}. A human approves and delivers it.`;
+        return { text: confirmation, structured: { sent: false, drafted: true, mode: 'review', conversationId, reviewConversationId: outcome.reviewConversationId, at: new Date(outcome.at).toISOString() } };
+      }
       const confirmation = `Sent to ${conversationId} at ${formatTimestamp(outcome.at)}.`;
-      return { text: confirmation, structured: { sent: true, conversationId, to: outcome.to, at: new Date(outcome.at).toISOString() } };
+      return { text: confirmation, structured: { sent: true, mode: 'direct', conversationId, to: outcome.to, at: new Date(outcome.at).toISOString() } };
     },
   },
 
@@ -422,8 +426,9 @@ function imageError(message: string): ToolOutput {
 
 function replyStatusLine(): string {
   if (!isReplyEnabled()) return 'off (read-only — set CONNECTOR_ALLOW_REPLY=true to let the PM reply)';
+  if (isReviewMode()) return `review mode — drafts go to ${reviewConversationId()} for approval; the client is never written to`;
   const allow = replyAllowlist();
-  return allow.length ? `on (send_line_reply) — restricted to ${allow.length} conversation${allow.length === 1 ? '' : 's'}` : 'on (send_line_reply) — any LINE conversation';
+  return allow.length ? `on, direct send — restricted to ${allow.length} conversation${allow.length === 1 ? '' : 's'}` : 'on, direct send — any LINE conversation';
 }
 
 function replyError(reason: ReplyReason, conversationId: string): ToolOutput {
@@ -434,6 +439,9 @@ function replyError(reason: ReplyReason, conversationId: string): ToolOutput {
     not_line: 'Only LINE conversations can be replied to — WhatsApp is capture-only here.',
     not_allowed: `Replying to "${conversationId}" isn't allowed. Add it to CONNECTOR_REPLY_CONVERSATION_IDS, or clear that list to allow any LINE conversation.`,
     no_token: 'The LINE channel for this conversation has no access token configured, so the reply can\'t be sent.',
+    review_not_found: `Review mode is on, but the review group "${reviewConversationId()}" hasn't been captured yet. Make sure the bot is in that group and one message has been seen, then try again.`,
+    review_not_line: 'The configured review conversation must be a LINE conversation.',
+    review_no_token: 'The LINE channel for the review group has no access token configured, so the draft can\'t be posted.',
   }[reason];
   return { text: message, structured: { sent: false, reason, conversationId } };
 }

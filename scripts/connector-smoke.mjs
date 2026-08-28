@@ -810,6 +810,49 @@ await test('connector_status reports reply capability both ways', async () => {
   const on = await callTool('connector_status');
   assertIncludes(on.content[0].text, 'replies: on', 'on when enabled');
   assertEqual(on.structuredContent.replies.enabled, true, 'structured reply state');
+  assertEqual(on.structuredContent.replies.mode, 'direct', 'direct mode by default');
+  delete process.env.CONNECTOR_ALLOW_REPLY;
+});
+
+// Review (draft-for-approval) mode: replies are posted into an internal group
+// for a human to approve, and the client is never written to.
+const EXEC = 'line:tecxmate:group:C_exec';
+await recordMessage({
+  tenantId: 'demo', channelId: 'tecxmate', platform: 'line', conversationType: 'group',
+  externalConversationId: 'C_exec', title: 'tecx-exec', direction: 'inbound',
+  senderId: 'U_brian', senderName: 'Brian', text: 'ready to review', messageType: 'text',
+  externalMessageId: 'line-exec-1', at: now - 30_000,
+});
+
+await test('review mode routes the draft to the review group, not the client', async () => {
+  process.env.CONNECTOR_ALLOW_REPLY = 'true';
+  process.env.CONNECTOR_REVIEW_CONVERSATION_ID = EXEC;
+  // Target is the client group (ACME); the draft is destined for the exec group.
+  // Both are on the token-less tecxmate channel in tests, so it stops at the
+  // review group's token step — proving it routed there, not to the client.
+  const result = await callTool('send_line_reply', { conversation_id: ACME, text: 'Proposed answer for the client.' });
+  assertEqual(result.structuredContent.reason, 'review_no_token', 'stops at the review group token step');
+  delete process.env.CONNECTOR_REVIEW_CONVERSATION_ID;
+  delete process.env.CONNECTOR_ALLOW_REPLY;
+});
+
+await test('review mode explains an uncaptured review group', async () => {
+  process.env.CONNECTOR_ALLOW_REPLY = 'true';
+  process.env.CONNECTOR_REVIEW_CONVERSATION_ID = 'line:tecxmate:group:C_not_seen';
+  const result = await callTool('send_line_reply', { conversation_id: ACME, text: 'hi' });
+  assertEqual(result.structuredContent.reason, 'review_not_found', 'review group not captured yet');
+  delete process.env.CONNECTOR_REVIEW_CONVERSATION_ID;
+  delete process.env.CONNECTOR_ALLOW_REPLY;
+});
+
+await test('connector_status reports review mode', async () => {
+  process.env.CONNECTOR_ALLOW_REPLY = 'true';
+  process.env.CONNECTOR_REVIEW_CONVERSATION_ID = EXEC;
+  const status = await callTool('connector_status');
+  assertIncludes(status.content[0].text, 'review mode', 'names review mode');
+  assertEqual(status.structuredContent.replies.mode, 'review', 'structured review mode');
+  assertEqual(status.structuredContent.replies.reviewConversationId, EXEC, 'names the review group');
+  delete process.env.CONNECTOR_REVIEW_CONVERSATION_ID;
   delete process.env.CONNECTOR_ALLOW_REPLY;
 });
 

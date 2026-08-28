@@ -5,7 +5,7 @@
 // means the same server can later be exposed over a different transport.
 
 import { findTool, toolListPayload } from './tools.js';
-import { isReplyEnabled } from './reply.js';
+import { isReplyEnabled, isReviewMode } from './reply.js';
 
 export type JsonRpcId = string | number | null;
 
@@ -38,11 +38,17 @@ function buildInstructions(): string {
   ];
   if (isReplyEnabled()) {
     lines.push(
-      'This deployment also lets you act as the TECXMATE project manager (PM) in the client\'s LINE group.',
-      'When a message tags or is addressed to the PM: read the surrounding conversation, check the project\'s status in Jira (via the connected Jira/Atlassian tools) before answering, then post a concise, professional reply with send_line_reply. It sends to the whole group.',
+      'This deployment also lets you act as the TECXMATE project manager (PM) for the client\'s LINE group.',
+      'When a message tags or is addressed to the PM: read the surrounding conversation, check the project\'s status in Jira (via the connected Jira/Atlassian tools) before answering, then call send_line_reply with the CLIENT conversation_id you are answering and your reply.',
       'Reply only to messages that actually address the PM — not to every message. Ground every answer in the conversation and in Jira; never invent dates, prices, or commitments — check Jira, or say you will follow up. Your own replies appear in the transcript as outbound, so do not answer the same message twice.',
       '',
     );
+    if (isReviewMode()) {
+      lines.push(
+        'Review mode is ON: send_line_reply does NOT message the client. It posts your draft into an internal review group for a human (the operator and Brian) to approve; they deliver the approved message themselves. So write the draft as the finished reply you propose, and tell the user you have posted it for approval — never claim the client has been messaged.',
+        '',
+      );
+    }
   } else {
     lines.push(
       'Every tool is read-only: nothing here sends messages or changes anything on the messaging platforms.',
