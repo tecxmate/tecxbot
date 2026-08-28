@@ -289,20 +289,24 @@ or Claude Code on a 24/7 Mac mini) does the thinking — reading the client chat
 through this connector, checking the project in **Jira** via the Atlassian
 connector, then posting back into the group as the TECXMATE project manager.
 
-It is off by default and fail-closed:
+**By default the PM drafts in the Claude chat and you send it — no LINE push,
+zero quota.** `send_line_reply` (a push to LINE) is opt-in and off by default:
 
 ```text
 CONNECTOR_ALLOW_REPLY=true                 # required; the write tool is hidden without it
-CONNECTOR_REVIEW_CONVERSATION_ID=line:...  # review mode: drafts go to this internal group, never the client
+CONNECTOR_REPLY_MONTHLY_CAP=150            # hard cap on LINE pushes per month (0/unset = none)
+CONNECTOR_REVIEW_CONVERSATION_ID=line:...  # review mode: pushes go to this internal group, never the client
 CONNECTOR_REPLY_CONVERSATION_IDS=line:...  # direct mode scope: only these ids are writable (empty = any LINE chat)
 CONNECTOR_REPLY_SENDER_NAME=TECXMATE PM    # optional label for the PM's messages
 ```
 
-**Review vs direct.** With `CONNECTOR_REVIEW_CONVERSATION_ID` set, the PM never
-messages the client: `send_line_reply` posts the draft into that internal group
+**Review vs direct.** With `CONNECTOR_REVIEW_CONVERSATION_ID` set, a push never
+reaches the client: `send_line_reply` posts the draft into that internal group
 (e.g. tecx-exec) for a human to approve and deliver. It's an enforced gate — no
 client-send path exists in that mode. Unset it for direct send (scoped by the
-allowlist). Start in review mode.
+allowlist). **Quota:** LINE push messages count against a monthly limit (~200 free
+in Taiwan); `CONNECTOR_REPLY_MONTHLY_CAP` refuses once spent, falling back to
+draft-in-chat.
 
 The LINE channel access token (already configured) delivers the message — that's
 the bot's messaging credential, not an AI key. Full walkthrough, the PM prompt,

@@ -856,6 +856,47 @@ await test('connector_status reports review mode', async () => {
   delete process.env.CONNECTOR_ALLOW_REPLY;
 });
 
+// Monthly push cap — a hard backstop on LINE quota. Counted from the pm-reply
+// markers already recorded for each push, so no extra state is needed.
+await recordMessage({
+  tenantId: 'demo', channelId: 'tecxmate', platform: 'line', conversationType: 'group',
+  externalConversationId: 'C_acme', title: 'Acme Corp', direction: 'outbound',
+  senderName: 'TECXMATE PM', text: 'earlier PM push', messageType: 'text',
+  externalMessageId: `pm-reply:${now}:capseed`, at: now - 10_000,
+});
+
+await test('monthly cap refuses once the budget is spent', async () => {
+  process.env.CONNECTOR_ALLOW_REPLY = 'true';
+  process.env.CONNECTOR_REPLY_MONTHLY_CAP = '1'; // one pm-reply already recorded above
+  const result = await callTool('send_line_reply', { conversation_id: ACME, text: 'one more' });
+  assertEqual(result.structuredContent.reason, 'over_cap', 'blocked at the cap');
+  assertEqual(result.structuredContent.cap, 1, 'reports the cap');
+  assert(result.structuredContent.used >= 1, 'reports usage');
+  assertIncludes(result.content[0].text, 'draft in chat', 'suggests the zero-quota fallback');
+  delete process.env.CONNECTOR_REPLY_MONTHLY_CAP;
+  delete process.env.CONNECTOR_ALLOW_REPLY;
+});
+
+await test('a generous cap does not block (routes on to the token step)', async () => {
+  process.env.CONNECTOR_ALLOW_REPLY = 'true';
+  process.env.CONNECTOR_REPLY_MONTHLY_CAP = '500';
+  const result = await callTool('send_line_reply', { conversation_id: ACME, text: 'still fine' });
+  assertEqual(result.structuredContent.reason, 'no_token', 'under cap, proceeds past the cap check');
+  delete process.env.CONNECTOR_REPLY_MONTHLY_CAP;
+  delete process.env.CONNECTOR_ALLOW_REPLY;
+});
+
+await test('connector_status reports the monthly cap and usage', async () => {
+  process.env.CONNECTOR_ALLOW_REPLY = 'true';
+  process.env.CONNECTOR_REPLY_MONTHLY_CAP = '150';
+  const status = await callTool('connector_status');
+  assertIncludes(status.content[0].text, 'reply pushes this month', 'shows usage line');
+  assertEqual(status.structuredContent.replies.monthlyCap, 150, 'structured cap');
+  assert(status.structuredContent.replies.pushesThisMonth >= 1, 'structured usage');
+  delete process.env.CONNECTOR_REPLY_MONTHLY_CAP;
+  delete process.env.CONNECTOR_ALLOW_REPLY;
+});
+
 // ---- result ----
 
 console.log(`\n${passed} passed, ${failures} failed`);

@@ -9,7 +9,7 @@
 // the message is the bot's own messaging credential (needed to send any LINE
 // message at all), never an AI key, and it stays server-side.
 
-import { getConversation, recordMessage, type ConversationSummary } from '../core/conversationStore.js';
+import { countReplyPushesSince, getConversation, recordMessage, REPLY_PUSH_PREFIX, type ConversationSummary } from '../core/conversationStore.js';
 import { getTenantChannelConfig } from '../core/tenantStore.js';
 import { pushLineMessage } from '../platforms/line/client.js';
 
@@ -55,13 +55,37 @@ export function isConversationReplyable(conversationId: string): boolean {
   return allow.length === 0 || allow.includes(conversationId);
 }
 
+/**
+ * Monthly push cap — a hard backstop on LINE quota. Every send_line_reply call
+ * is a LINE push (to the client, or the review group), and LINE's free tier is
+ * limited (~200/month in Taiwan). With CONNECTOR_REPLY_MONTHLY_CAP set to a
+ * positive integer, the tool refuses once that many pushes have been recorded in
+ * the current calendar month. 0 / unset = no cap. The count is of the pm-reply
+ * markers in the durable log, so it survives restarts (on the memory store it
+ * resets on cold start, which is fine for dev).
+ */
+export function monthlyCap(): number | undefined {
+  const raw = Number(process.env.CONNECTOR_REPLY_MONTHLY_CAP ?? '');
+  return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : undefined;
+}
+
+/** Start of the current calendar month, UTC (an approximation of LINE's cycle). */
+export function monthStartMs(now = new Date()): number {
+  return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1);
+}
+
+/** Pushes used this month and the configured cap, for status/reporting. */
+export async function replyQuota(): Promise<{ cap?: number; used: number }> {
+  return { cap: monthlyCap(), used: await countReplyPushesSince(monthStartMs()) };
+}
+
 export type ReplyReason =
   | 'disabled' | 'empty' | 'not_found' | 'not_line' | 'not_allowed' | 'no_token'
-  | 'review_not_found' | 'review_not_line' | 'review_no_token';
+  | 'review_not_found' | 'review_not_line' | 'review_no_token' | 'over_cap';
 export type ReplyOutcome =
   | { ok: true; mode: 'direct'; conversationId: string; to: string; at: number }
   | { ok: true; mode: 'review'; conversationId: string; reviewConversationId: string; to: string; at: number }
-  | { ok: false; reason: ReplyReason };
+  | { ok: false; reason: ReplyReason; used?: number; cap?: number };
 
 /**
  * Send the PM's reply. In direct mode it is delivered to the client conversation
@@ -79,6 +103,14 @@ export async function sendLineReply(input: { conversationId: string; text: strin
   if (!target) return { ok: false, reason: 'not_found' };
   if (target.platform !== 'line') return { ok: false, reason: 'not_line' };
   if (!isConversationReplyable(target.conversationId)) return { ok: false, reason: 'not_allowed' };
+
+  // Hard LINE-quota backstop: refuse once the month's push budget is spent. Both
+  // modes below push exactly once, so the check belongs here, before either.
+  const cap = monthlyCap();
+  if (cap !== undefined) {
+    const used = await countReplyPushesSince(monthStartMs());
+    if (used >= cap) return { ok: false, reason: 'over_cap', used, cap };
+  }
 
   const reviewId = reviewConversationId();
   if (reviewId) return draftForReview(target, text, reviewId, input.tenantId);
@@ -143,8 +175,9 @@ async function recordOutbound(conversation: ConversationSummary, text: string, a
       text,
       messageType: 'text',
       // Synthetic id (not a real LINE message id) — keeps the idempotency index
-      // happy and marks this as a PM reply rather than fetchable media.
-      externalMessageId: `pm-reply:${at}:${Math.random().toString(36).slice(2, 8)}`,
+      // happy, marks this as a PM reply rather than fetchable media, and is what
+      // the monthly cap counts.
+      externalMessageId: `${REPLY_PUSH_PREFIX}${at}:${Math.random().toString(36).slice(2, 8)}`,
       at,
     });
   } catch (error) {

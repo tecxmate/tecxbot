@@ -19,7 +19,7 @@ import {
 import { listConnectorChannels } from '../core/tenantStore.js';
 import { fetchMediaBytes } from './media.js';
 import { isR2Configured } from '../core/r2.js';
-import { isReplyEnabled, isReviewMode, replyAllowlist, reviewConversationId, sendLineReply, type ReplyReason } from './reply.js';
+import { isReplyEnabled, isReviewMode, monthlyCap, replyAllowlist, replyQuota, reviewConversationId, sendLineReply, type ReplyOutcome, type ReplyReason } from './reply.js';
 
 // A tool normally returns text; `content` lets it return richer MCP blocks
 // (e.g. an image), which the server uses in place of the wrapped text.
@@ -260,12 +260,14 @@ export const connectorTools: ToolDefinition[] = [
     async handler(args) {
       const stats = await getStats(enforcedTenant(args.tenant_id));
       const channels = listConnectorChannels();
+      const quota = isReplyEnabled() ? await replyQuota() : { cap: monthlyCap(), used: 0 };
       const lines = [
         '# Tecxbot connector status',
         '',
         `storage: ${stats.backend}${stats.durable ? ' (durable)' : ' (in-memory — history is lost on every cold start)'}`,
         `capture: ${isCaptureEnabled() ? 'on' : 'off (CONNECTOR_CAPTURE=false)'}`,
         `replies: ${replyStatusLine()}`,
+        ...(isReplyEnabled() && quota.cap ? [`reply pushes this month: ${quota.used} / ${quota.cap}`] : []),
         `media archival: ${isR2Configured() ? 'on (Cloudflare R2)' : 'off — media served live from LINE, recent only'}`,
         `conversations captured: ${stats.conversations}`,
         `messages captured: ${stats.messages}`,
@@ -281,7 +283,7 @@ export const connectorTools: ToolDefinition[] = [
         structured: {
           ...stats,
           capture: isCaptureEnabled(),
-          replies: { enabled: isReplyEnabled(), mode: isReviewMode() ? 'review' : 'direct', reviewConversationId: reviewConversationId() ?? null, allowlist: replyAllowlist() },
+          replies: { enabled: isReplyEnabled(), mode: isReviewMode() ? 'review' : 'direct', reviewConversationId: reviewConversationId() ?? null, allowlist: replyAllowlist(), monthlyCap: quota.cap ?? null, pushesThisMonth: quota.used },
           mediaArchival: isR2Configured(),
           channels,
         },
@@ -312,7 +314,7 @@ export const connectorTools: ToolDefinition[] = [
       if (!conversationId) throw new Error('conversation_id is required.');
       if (!text) throw new Error('text is required.');
       const outcome = await sendLineReply({ conversationId, text, tenantId: enforcedTenant(args.tenant_id) });
-      if (!outcome.ok) return replyError(outcome.reason, conversationId);
+      if (!outcome.ok) return replyError(outcome, conversationId);
       if (outcome.mode === 'review') {
         const confirmation = `Draft posted to the review group for approval — nothing was sent to the client. Drafted for ${conversationId} at ${formatTimestamp(outcome.at)}. A human approves and delivers it.`;
         return { text: confirmation, structured: { sent: false, drafted: true, mode: 'review', conversationId, reviewConversationId: outcome.reviewConversationId, at: new Date(outcome.at).toISOString() } };
@@ -426,12 +428,16 @@ function imageError(message: string): ToolOutput {
 
 function replyStatusLine(): string {
   if (!isReplyEnabled()) return 'off (read-only — set CONNECTOR_ALLOW_REPLY=true to let the PM reply)';
-  if (isReviewMode()) return `review mode — drafts go to ${reviewConversationId()} for approval; the client is never written to`;
+  const cap = monthlyCap();
+  const capNote = cap ? ` · monthly push cap ${cap}` : '';
+  if (isReviewMode()) return `review mode — drafts go to ${reviewConversationId()} for approval; the client is never written to${capNote}`;
   const allow = replyAllowlist();
-  return allow.length ? `on, direct send — restricted to ${allow.length} conversation${allow.length === 1 ? '' : 's'}` : 'on, direct send — any LINE conversation';
+  const scope = allow.length ? `restricted to ${allow.length} conversation${allow.length === 1 ? '' : 's'}` : 'any LINE conversation';
+  return `on, direct send — ${scope}${capNote}`;
 }
 
-function replyError(reason: ReplyReason, conversationId: string): ToolOutput {
+function replyError(outcome: Extract<ReplyOutcome, { ok: false }>, conversationId: string): ToolOutput {
+  const reason: ReplyReason = outcome.reason;
   const message = {
     disabled: 'Replying is turned off on this deployment. Set CONNECTOR_ALLOW_REPLY=true to let the PM post to LINE.',
     empty: 'Nothing to send — the reply text was empty.',
@@ -442,8 +448,9 @@ function replyError(reason: ReplyReason, conversationId: string): ToolOutput {
     review_not_found: `Review mode is on, but the review group "${reviewConversationId()}" hasn't been captured yet. Make sure the bot is in that group and one message has been seen, then try again.`,
     review_not_line: 'The configured review conversation must be a LINE conversation.',
     review_no_token: 'The LINE channel for the review group has no access token configured, so the draft can\'t be posted.',
+    over_cap: `Monthly LINE push cap reached (${outcome.used ?? '?'} of ${outcome.cap ?? '?'} used this month), so nothing was sent — this protects the LINE quota. It resets at the start of next month, or raise CONNECTOR_REPLY_MONTHLY_CAP. Present the draft in chat for a human to send instead.`,
   }[reason];
-  return { text: message, structured: { sent: false, reason, conversationId } };
+  return { text: message, structured: { sent: false, reason, conversationId, ...(reason === 'over_cap' ? { used: outcome.used, cap: outcome.cap } : {}) } };
 }
 
 // Resolve and validate a media reference: the message id must belong to this

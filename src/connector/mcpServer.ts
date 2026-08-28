@@ -36,22 +36,30 @@ function buildInstructions(): string {
     'Then use get_conversation for a full transcript, search_messages to find a phrase, and list_conversations to browse.',
     '',
   ];
+  // The PM draft-in-chat role is the same whether or not the send tool exists —
+  // reading + drafting uses only read tools. send_line_reply is an add-on for the
+  // rare case a push is genuinely wanted.
+  lines.push(
+    'You can act as the TECXMATE project manager (PM) for the client\'s LINE group.',
+    'When a message tags or is addressed to the PM: read the surrounding conversation and check the project\'s status in Jira (via the connected Jira/Atlassian tools) before answering.',
+    'DEFAULT: present your proposed reply as a draft here in this chat for the operator to read and send themselves. Do NOT push it to LINE. This is the normal path and it uses no LINE quota.',
+    'Reply only to messages that actually address the PM — not every message. Ground every answer in the conversation and in Jira; never invent dates, prices, or commitments — check Jira, or say you will follow up.',
+    '',
+  );
   if (isReplyEnabled()) {
     lines.push(
-      'This deployment also lets you act as the TECXMATE project manager (PM) for the client\'s LINE group.',
-      'When a message tags or is addressed to the PM: read the surrounding conversation, check the project\'s status in Jira (via the connected Jira/Atlassian tools) before answering, then call send_line_reply with the CLIENT conversation_id you are answering and your reply.',
-      'Reply only to messages that actually address the PM — not to every message. Ground every answer in the conversation and in Jira; never invent dates, prices, or commitments — check Jira, or say you will follow up. Your own replies appear in the transcript as outbound, so do not answer the same message twice.',
+      'You also have send_line_reply, which pushes a message to LINE. Use it ONLY as an exception — when the operator explicitly asks you to post, or when something clearly must reach the exec group as a notification. Each call spends one push from a limited monthly LINE quota, so it is the exception, never the default; when unsure, draft in chat instead.',
       '',
     );
     if (isReviewMode()) {
       lines.push(
-        'Review mode is ON: send_line_reply does NOT message the client. It posts your draft into an internal review group for a human (the operator and Brian) to approve; they deliver the approved message themselves. So write the draft as the finished reply you propose, and tell the user you have posted it for approval — never claim the client has been messaged.',
+        'When you do call send_line_reply, review mode is ON: it posts the draft into an internal exec group for approval, never to the client, and the operator and Brian deliver it. So never claim the client has been messaged — say you have posted it to the exec group for approval.',
         '',
       );
     }
   } else {
     lines.push(
-      'Every tool is read-only: nothing here sends messages or changes anything on the messaging platforms.',
+      'send_line_reply is not available on this deployment, so you cannot push anything to LINE — draft in chat and the operator sends it. The connector is otherwise read-only.',
       '',
     );
   }
