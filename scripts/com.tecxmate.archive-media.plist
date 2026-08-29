@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  launchd agent for the always-on machine. Install with:
+
+    cp scripts/com.tecxmate.archive-media.plist ~/Library/LaunchAgents/
+    # edit the ProgramArguments path below to this checkout's absolute path
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.tecxmate.archive-media.plist
+    launchctl kickstart -p gui/$(id -u)/com.tecxmate.archive-media   # run once now
+
+  Check it:   launchctl list | grep archive-media
+  Logs:       tail -f ~/Library/Logs/tecxbot-archive-media.log
+  Remove:     launchctl bootout gui/$(id -u)/com.tecxmate.archive-media
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.tecxmate.archive-media</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <!-- EDIT: absolute path to this repo's script on the always-on machine -->
+    <string>/Users/niko/antigravity/tecxbot/scripts/archive-media-tick.sh</string>
+  </array>
+
+  <!-- Every 15 minutes. StartInterval fires on wake if a run was missed. -->
+  <key>StartInterval</key>
+  <integer>900</integer>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/niko/Library/Logs/tecxbot-archive-media.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/niko/Library/Logs/tecxbot-archive-media.log</string>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+</dict>
+</plist>

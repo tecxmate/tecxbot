@@ -3,6 +3,10 @@
   "rewrites": [
     { "source": "/api/whatsapp-webhook", "destination": "/api/facebook-webhook" },
     { "source": "/api/line-reminders", "destination": "/api/cron?job=line-reminders" },
-    { "source": "/api/ops-daily-report", "destination": "/api/cron?job=ops-daily-report" }
+    { "source": "/api/ops-daily-report", "destination": "/api/cron?job=ops-daily-report" },
+    { "source": "/api/archive-media", "destination": "/api/cron?job=archive-media" }
+  ],
+  "crons": [
+    { "path": "/api/archive-media", "schedule": "0 3 * * *" }
   ]
 }
