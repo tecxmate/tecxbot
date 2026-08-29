@@ -44,15 +44,25 @@ _As of the Cloudflare R2 media work (`#6`). Update this note as things change._
 
 ## Remaining setup (do these)
 
-### 1. Turn on durable media (Cloudflare R2)
-1. Cloudflare → **R2** → create a bucket. Under **Manage R2 API Tokens**, create a
-   token with Object Read & Write → note the Access Key ID + Secret.
-2. In **Vercel → tecxbot → Environment Variables**, add (see `.env.example`):
-   `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`.
-3. **Redeploy.**
-4. **Schedule the archive job** every few minutes (Vercel Cron / GitHub Actions):
-   `GET https://tecxbot.vercel.app/api/cron?job=archive-media&secret=$CRON_SECRET`
-5. Verify: `connector_status` should show `media archival: on (Cloudflare R2)`.
+### 1. Turn on durable media (Cloudflare R2) — **done**
+Bucket `tecxbot-media` exists, the four `R2_*` vars are set in Production, and
+`connector_status` reports `mediaArchival: true`.
+
+What remains is **scheduling the archive job**. Two drivers, both wanted:
+
+- **Vercel Cron** (`vercel.json`) — `0 3 * * *`. The Hobby plan allows at most one
+  run per day, so this is a backstop, not the main driver. It keeps working when
+  the always-on machine is down.
+- **The always-on machine** — every 15 minutes via launchd, which is what
+  actually keeps media fresh. See `scripts/archive-media-tick.sh` and
+  `scripts/com.tecxmate.archive-media.plist` for setup.
+
+Why both: LINE only holds media for a short window, so a once-daily sweep can
+miss things; but a local scheduler is a single machine that can go down. Neither
+alone is sufficient. The job is idempotent, so overlapping runs are harmless.
+
+Verify: `vercel crons ls` lists the job, `launchctl list | grep archive-media`
+shows the agent, and `~/Library/Logs/tecxbot-archive-media.log` shows `ok` lines.
 
 ### 2. Reconnect the Claude connector
 After a deploy that adds tools (e.g. `get_image`/`get_file`), **disconnect and

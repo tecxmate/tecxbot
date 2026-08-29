@@ -7,6 +7,6 @@
     { "source": "/api/archive-media", "destination": "/api/cron?job=archive-media" }
   ],
   "crons": [
-    { "path": "/api/archive-media", "schedule": "*/15 * * * *" }
+    { "path": "/api/archive-media", "schedule": "0 3 * * *" }
   ]
 }
