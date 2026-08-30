@@ -78,19 +78,19 @@ CONNECTOR_REPLY_SENDER_NAME=TECXMATE PM    # optional; label for the PM's messag
 CONNECTOR_REVIEW_CONVERSATION_ID=line:tecxmate:group:C985633fca4271ba1af8a880cee989ba0
 
 # Direct-to-client instead? Leave CONNECTOR_REVIEW_CONVERSATION_ID unset and scope
-# the target to the client group's id (find it with list_conversations once the
-# client group is set up — it is not the tecx-boss id above):
-# CONNECTOR_REPLY_CONVERSATION_IDS=line:tecxmate:group:C_your_client_group
+# the target to the client group's id (this is the "Richard & Brian" client group,
+# distinct from the tecx-boss exec id above):
+# CONNECTOR_REPLY_CONVERSATION_IDS=line:tecxmate:group:C4d841fdb4f2ab45254fa8c77a5dfcc60
 ```
 
 Set-up notes for the push tiers:
 1. The exec group ("tecx-boss") is already captured — its id is in the block
    above. (For a different exec group: add the TECXMATE bot to it, send one
    message, and find its id with `list_conversations`.)
-2. Review mode drafts a reply *for a client message*, so it only does real work
-   once a **client group** exists (add the bot there, send a message, find its id
-   with `list_conversations`). Until then you can smoke-test by targeting
-   tecx-boss itself — the draft simply lands in tecx-boss.
+2. The **client group** ("Richard & Brian") is set up and captured:
+   `line:tecxmate:group:C4d841fdb4f2ab45254fa8c77a5dfcc60`. Review mode drafts a
+   reply *for a client message* there and posts it to tecx-boss for approval —
+   the client group itself is never written to.
 3. Redeploy, then **disconnect and reconnect** the connector in your Claude client
    so it picks up `send_line_reply`.
 
