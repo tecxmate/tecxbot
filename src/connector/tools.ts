@@ -414,7 +414,13 @@ export const connectorTools: ToolDefinition[] = [
         return { text: label, structured, content: [{ type: 'text', text: label }, { type: 'image', data: base64, mimeType: media.contentType }] };
       }
       if (rendering.kind === 'text') {
-        return { text: `${label}\n\n${rendering.text}`, structured: { ...structured, textLength: rendering.text.length } };
+        // Put the file's text in BOTH the wrapped text block and structuredContent:
+        // the claude.ai connector surfaces structuredContent as the tool result, so
+        // the content had to live there too, not only in the text block.
+        return {
+          text: `${label}\n\n${rendering.text}`,
+          structured: { ...structured, textLength: rendering.text.length, text: rendering.text },
+        };
       }
       // Binary the model can't read inline (a PDF, a zip, or a file over the inline
       // text cap). Report it rather than dumping base64 that no client renders.
