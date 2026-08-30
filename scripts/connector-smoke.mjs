@@ -33,6 +33,7 @@ const { handleWhatsappWebhook } = await import(`${DIST}/src/platforms/whatsapp/w
 const { authorizeConnector } = await import(`${DIST}/src/connector/auth.js`);
 const { resolveSqlEndpoint, prepareParam } = await import(`${DIST}/src/core/sql.js`);
 const { decideAssistant, buildAssistantPrompt } = await import(`${DIST}/src/botSystems/claudeAssistant.js`);
+const { handleTecxmateLineEvent, isTecxmateCaptureOnly } = await import(`${DIST}/src/botSystems/tecxmate.js`);
 const { parseSince } = await import(`${DIST}/src/connector/tools.js`);
 const mcpEndpoint = (await import(`${DIST}/api/mcp.js`)).default;
 const metaEndpoint = (await import(`${DIST}/api/facebook-webhook.js`)).default;
@@ -895,6 +896,36 @@ await test('connector_status reports the monthly cap and usage', async () => {
   assert(status.structuredContent.replies.pushesThisMonth >= 1, 'structured usage');
   delete process.env.CONNECTOR_REPLY_MONTHLY_CAP;
   delete process.env.CONNECTOR_ALLOW_REPLY;
+});
+
+// ---- tecxmate bot silence ----
+// The tecxmate bot must stay silent in a client group (capture happens at the
+// webhook regardless). Default is capture-only; opting out restores the legacy
+// tappable task bot.
+
+console.log('\ntecxmate silence');
+
+const tecxmateRuntime = {
+  tenant: { id: 'tecxmate', botMentionNames: ['tecxmate', 'bot'] },
+  channel: { id: 'tecxmate', line: { channelAccessToken: 't' }, botSystem: { kind: 'tecxmate', companyName: 'TECXMATE', ownerUserIds: [] } },
+};
+const joinEvent = { type: 'join', source: { type: 'group', groupId: 'C_client' } };
+
+await test('capture-only is the default', () => {
+  delete process.env.TECXMATE_CAPTURE_ONLY;
+  assertEqual(isTecxmateCaptureOnly(), true, 'silent by default');
+});
+
+await test('tecxmate bot stays silent on join by default (no welcome in the group)', async () => {
+  delete process.env.TECXMATE_CAPTURE_ONLY;
+  assertEqual(await handleTecxmateLineEvent(joinEvent, tecxmateRuntime), undefined, 'no reply');
+});
+
+await test('opting out restores the legacy welcome', async () => {
+  process.env.TECXMATE_CAPTURE_ONLY = 'false';
+  const reply = await handleTecxmateLineEvent(joinEvent, tecxmateRuntime);
+  assert(reply && /assistant/i.test(reply.text), 'welcome comes back when opted out');
+  delete process.env.TECXMATE_CAPTURE_ONLY;
 });
 
 // ---- result ----

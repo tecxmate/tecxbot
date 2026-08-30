@@ -126,6 +126,12 @@ when a cap is set.
 
 ## Safety model
 
+- **Silent in the group.** The tecxmate bot is **capture-only by default**
+  (`TECXMATE_CAPTURE_ONLY=true`): when added to a client group it posts nothing —
+  no join welcome, no task menus, no auto-replies — it just feeds the connector.
+  So a client never sees the bot speak unless *you* send something (draft-in-chat,
+  or an explicit `send_line_reply`). Set the flag to `false` only to bring back
+  the old tappable task-dispatch bot.
 - **Draft-in-chat default.** The normal path pushes nothing to LINE — the PM
   proposes, you send. No quota, no risk of an unwanted client message.
 - **Fail closed.** With `CONNECTOR_ALLOW_REPLY` unset, the write tool isn't even
