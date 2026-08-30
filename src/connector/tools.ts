@@ -20,6 +20,7 @@ import { listConnectorChannels } from '../core/tenantStore.js';
 import { fetchMediaBytes } from './media.js';
 import { isR2Configured } from '../core/r2.js';
 import { isReplyEnabled, isReviewMode, monthlyCap, replyAllowlist, replyQuota, reviewConversationId, sendLineReply, type ReplyOutcome, type ReplyReason } from './reply.js';
+import { decideFileRendering, fileNameFromPlaceholder } from './fileKind.js';
 
 // A tool normally returns text; `content` lets it return richer MCP blocks
 // (e.g. an image), which the server uses in place of the wrapped text.
@@ -48,10 +49,6 @@ export type ToolDefinition = {
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const MAX_TEXT_FILE_BYTES = 512 * 1024;
 const MEDIA_TYPES = new Set(['image', 'video', 'audio', 'file']);
-
-function isTextType(contentType: string) {
-  return /^text\//.test(contentType) || /(json|csv|xml|yaml|markdown|javascript|x-www-form-urlencoded)/.test(contentType);
-}
 
 const PLATFORM_ENUM = ['line', 'whatsapp'];
 
@@ -404,20 +401,25 @@ export const connectorTools: ToolDefinition[] = [
       }
 
       const bytes = media.content.byteLength;
-      const label = `File from ${conversationLabel(conversation)}, sent by ${target.senderName || shortId(target.senderId) || 'client'} at ${formatTimestamp(target.at)} · ${media.contentType} · ${(bytes / 1024).toFixed(0)} KB.`;
-      const structured = { conversationId, messageId, mimeType: media.contentType, bytes, sentAt: new Date(target.at).toISOString(), source: media.source };
+      // LINE serves files as application/octet-stream, so fall back to the
+      // captured filename and a UTF-8 sniff to recover text (a .md/.csv/.txt spec
+      // would otherwise read as opaque binary).
+      const fileName = fileNameFromPlaceholder(target.text);
+      const label = `File${fileName ? ` "${fileName}"` : ''} from ${conversationLabel(conversation)}, sent by ${target.senderName || shortId(target.senderId) || 'client'} at ${formatTimestamp(target.at)} · ${media.contentType} · ${(bytes / 1024).toFixed(0)} KB.`;
+      const structured = { conversationId, messageId, fileName: fileName ?? null, mimeType: media.contentType, bytes, sentAt: new Date(target.at).toISOString(), source: media.source };
 
-      if (media.contentType.startsWith('image/')) {
+      const rendering = decideFileRendering({ contentType: media.contentType, fileName, content: media.content, maxTextBytes: MAX_TEXT_FILE_BYTES });
+      if (rendering.kind === 'image') {
         const base64 = Buffer.from(media.content).toString('base64');
         return { text: label, structured, content: [{ type: 'text', text: label }, { type: 'image', data: base64, mimeType: media.contentType }] };
       }
-      if (isTextType(media.contentType) && bytes <= MAX_TEXT_FILE_BYTES) {
-        const text = Buffer.from(media.content).toString('utf8');
-        return { text: `${label}\n\n${text}`, structured: { ...structured, textLength: text.length } };
+      if (rendering.kind === 'text') {
+        return { text: `${label}\n\n${rendering.text}`, structured: { ...structured, textLength: rendering.text.length } };
       }
-      // Binary the model can't read inline (a PDF, a zip). Report it rather than
-      // dumping base64 that no client renders reliably.
-      return { text: `${label}\n\nThis file type can't be shown inline here. It is ${media.source === 'r2' ? 'archived durably' : 'still available live from LINE'}.`, structured };
+      // Binary the model can't read inline (a PDF, a zip, or a file over the inline
+      // text cap). Report it rather than dumping base64 that no client renders.
+      const why = rendering.reason === 'too_big' ? `it is ${(bytes / 1024).toFixed(0)} KB, over the ${MAX_TEXT_FILE_BYTES / 1024} KB inline-text limit` : 'it is not text';
+      return { text: `${label}\n\nThis file can't be shown inline here (${why}). It is ${media.source === 'r2' ? 'archived durably' : 'still available live from LINE'}.`, structured };
     },
   },
 ];

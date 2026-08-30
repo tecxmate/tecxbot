@@ -124,7 +124,10 @@ Text is captured verbatim; images and files are captured as short placeholders
 (`[image]`, `[file: quote.pdf]`). Each media message carries a `mediaId` in
 `get_conversation` / `latest_context`; pass it to `get_image` (to see a picture)
 or `get_file` (to open a document/PDF/text file). Images cap at 5 MB inline;
-text files are returned as readable text.
+text files are returned as readable text. LINE hands every file over as
+`application/octet-stream`, so `get_file` recovers text from the filename
+extension (`.md`, `.csv`, `.txt`, …) or by sniffing the bytes as UTF-8 — a
+Markdown spec comes back as text, not an opaque blob.
 
 **Durable media (Cloudflare R2).** By default media is fetched **live from LINE
 on demand**, which only works while LINE still retains it (a short window). To
