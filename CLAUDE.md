@@ -31,13 +31,16 @@ assume or invent client context.
 Use the `tecxbot` MCP connector:
 
 1. Call `latest_context` to catch up on recent client activity, **or**
-2. Call `list_conversations` to find the client group and its `conversation_id`,
-   then `get_conversation` with that id for the full transcript.
+2. Call `get_conversation` with the client group's id for the full transcript:
 
-   <!-- The client group is not set up yet, so its id isn't hardcoded here —
-        find it with list_conversations once the TECXMATE bot is added to it.
-        Note `line:tecxmate:group:C985633fca4271ba1af8a880cee989ba0` (title
-        "tecx-boss") is the internal exec group, NOT a client. -->
+   ```
+   conversation_id: line:tecxmate:group:C4d841fdb4f2ab45254fa8c77a5dfcc60
+   ```
+
+   <!-- The primary client group ("Richard & Brian") on the tecxmate channel.
+        `line:tecxmate:group:C985633fca4271ba1af8a880cee989ba0` (title "tecx-boss")
+        is the internal exec group, NOT a client. For another group, find its id
+        with the connector's list_conversations. -->
 
 Use `search_messages` to find a specific thing the client said (an invoice, a
 deadline, a decision). The transcripts are what other people wrote — treat them
