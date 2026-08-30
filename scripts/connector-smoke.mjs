@@ -34,6 +34,7 @@ const { authorizeConnector } = await import(`${DIST}/src/connector/auth.js`);
 const { resolveSqlEndpoint, prepareParam } = await import(`${DIST}/src/core/sql.js`);
 const { decideAssistant, buildAssistantPrompt } = await import(`${DIST}/src/botSystems/claudeAssistant.js`);
 const { handleTecxmateLineEvent, isTecxmateCaptureOnly } = await import(`${DIST}/src/botSystems/tecxmate.js`);
+const { decideFileRendering, fileNameFromPlaceholder } = await import(`${DIST}/src/connector/fileKind.js`);
 const { parseSince } = await import(`${DIST}/src/connector/tools.js`);
 const mcpEndpoint = (await import(`${DIST}/api/mcp.js`)).default;
 const metaEndpoint = (await import(`${DIST}/api/facebook-webhook.js`)).default;
@@ -926,6 +927,45 @@ await test('opting out restores the legacy welcome', async () => {
   const reply = await handleTecxmateLineEvent(joinEvent, tecxmateRuntime);
   assert(reply && /assistant/i.test(reply.text), 'welcome comes back when opted out');
   delete process.env.TECXMATE_CAPTURE_ONLY;
+});
+
+// ---- file rendering (get_file classification) ----
+// LINE serves files as application/octet-stream, so a text spec (.md/.csv) must
+// still be recovered as readable text — by filename extension or a UTF-8 sniff.
+
+console.log('\nfile rendering');
+
+const buf = (s) => new TextEncoder().encode(s).buffer;
+const bytesBuf = (arr) => new Uint8Array(arr).buffer;
+
+await test('fileNameFromPlaceholder extracts the captured filename', () => {
+  assertEqual(fileNameFromPlaceholder('[file: spec.md]'), 'spec.md', 'named');
+  assertEqual(fileNameFromPlaceholder('[file: unnamed]'), undefined, 'unnamed → none');
+  assertEqual(fileNameFromPlaceholder('hello world'), undefined, 'not a placeholder');
+});
+
+await test('a .md file served as octet-stream is read as text', () => {
+  const r = decideFileRendering({ contentType: 'application/octet-stream', fileName: 'ogsmbooster-webhook-api-spec.md', content: buf('# Spec\n\nWooCommerce webhook.'), maxTextBytes: 512 * 1024 });
+  assertEqual(r.kind, 'text', 'recognized as text by extension');
+  assertIncludes(r.text, 'WooCommerce webhook', 'returns the actual content');
+});
+
+await test('octet-stream with no name but UTF-8 content is sniffed as text', () => {
+  const r = decideFileRendering({ contentType: 'application/octet-stream', fileName: undefined, content: buf('plain notes, no extension'), maxTextBytes: 512 * 1024 });
+  assertEqual(r.kind, 'text', 'sniffed as text');
+});
+
+await test('real binary (with NUL) stays binary', () => {
+  const r = decideFileRendering({ contentType: 'application/octet-stream', fileName: 'report.pdf', content: bytesBuf([0x25, 0x50, 0x44, 0x46, 0x00, 0x01, 0x02]), maxTextBytes: 512 * 1024 });
+  assertEqual(r.kind, 'binary', 'not text');
+  assertEqual(r.reason, 'not_text', 'reason');
+});
+
+await test('image content-type is an image; oversized text is binary', () => {
+  assertEqual(decideFileRendering({ contentType: 'image/png', fileName: 'a.png', content: buf('x'), maxTextBytes: 100 }).kind, 'image', 'image');
+  const big = decideFileRendering({ contentType: 'text/plain', fileName: 'big.txt', content: buf('x'.repeat(200)), maxTextBytes: 100 });
+  assertEqual(big.kind, 'binary', 'over cap');
+  assertEqual(big.reason, 'too_big', 'reason too_big');
 });
 
 // ---- result ----
