@@ -11,6 +11,16 @@ type TecxmateBot = Extract<TenantConfig['botSystem'], { kind: 'tecxmate' }>;
 const DEFAULT_CONTEXT_LIMIT = 20;
 const MAX_CONTEXT_LIMIT = 60;
 
+// Capture-only by default: in the connector + Claude-Desktop-PM model the bot is
+// a silent capturer — it must never post in a client group (no join welcome, no
+// task menus, no auto-replies). Capture happens at the webhook regardless, so
+// returning early here keeps the connector fully fed while the group stays quiet.
+// Set TECXMATE_CAPTURE_ONLY=false to restore the legacy tappable task-dispatch
+// bot below.
+export function isTecxmateCaptureOnly(): boolean {
+  return (process.env.TECXMATE_CAPTURE_ONLY ?? 'true').trim().toLowerCase() !== 'false';
+}
+
 // The tecxmate bot fronts client LINE groups AND a 1:1 "operator" chat with the
 // owner. Design goal: a guided, tappable assistant a non-technical owner can use
 // by tapping buttons — it never creates a task or sends to a client without a
@@ -19,6 +29,8 @@ const MAX_CONTEXT_LIMIT = 60;
 export async function handleTecxmateLineEvent(event: LineEvent, runtime: LineWebhookRuntime): Promise<BotReply | undefined> {
   const botSystem = runtime.channel.botSystem.kind === 'tecxmate' ? runtime.channel.botSystem : undefined;
   if (!botSystem) return undefined;
+  // Silent capture: never speak in LINE. The connector still records everything.
+  if (isTecxmateCaptureOnly()) return undefined;
   const source = event.source;
   const inGroup = !!(source && source.type !== 'user');
 
