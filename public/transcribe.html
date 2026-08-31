@@ -156,10 +156,10 @@
       const auth = { Authorization: 'Bearer ' + secret };
 
       try {
-        setStatus('Getting transcription key…');
+        setStatus('Getting transcription token…');
         const tokenRes = await fetch('/api/deepgram-token', { method: 'POST', headers: auth });
-        if (!tokenRes.ok) throw new Error('Key mint failed: ' + tokenRes.status + ' ' + (await tokenRes.text()));
-        const { key } = await tokenRes.json();
+        if (!tokenRes.ok) throw new Error('Token request failed: ' + tokenRes.status + ' ' + (await tokenRes.text()));
+        const { token, scheme } = await tokenRes.json();
 
         setStatus('Uploading & transcribing… (large files take a while)');
         const p = new URLSearchParams({ model: 'nova-3', smart_format: 'true', punctuate: 'true', paragraphs: 'true', numerals: 'true', diarize: 'true' });
@@ -167,7 +167,7 @@
         else p.set('language', language); // en | zh-TW | vi | multi
         const dgText = await postWithProgress(
           'https://api.deepgram.com/v1/listen?' + p.toString(),
-          { Authorization: 'Token ' + key, 'Content-Type': deepgramContentType(file) },
+          { Authorization: (scheme || 'Bearer') + ' ' + token, 'Content-Type': deepgramContentType(file) },
           file
         );
         const dg = JSON.parse(dgText);

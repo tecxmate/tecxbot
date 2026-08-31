@@ -47,12 +47,16 @@ For files past ~4.5 MB, open **`/transcribe.html`** (e.g.
 2. Pick the spoken language, optionally set project / milestone / title / tags.
 3. Choose the audio or video file and tap **Transcribe & save**.
 
-The browser mints a short-lived Deepgram key from `/api/deepgram-token` (also
-gated by `TRANSCRIBE_SECRET`) and uploads the file **straight to Deepgram**, so
-Vercel's 4.5 MB request cap never applies. The finished transcript is shown,
-copyable, and POSTed back to `/api/transcribe` as JSON to file it into project
-memory — the same store the shortcut writes to. Multi-speaker files come back
-with `[Speaker N]` labels.
+The browser requests a short-lived Deepgram **temporary token** from
+`/api/deepgram-token` (also gated by `TRANSCRIBE_SECRET`) and uploads the file
+**straight to Deepgram**, so Vercel's 4.5 MB request cap never applies. The
+finished transcript is shown, copyable, and POSTed back to `/api/transcribe` as
+JSON to file it into project memory — the same store the shortcut writes to.
+Multi-speaker files come back with `[Speaker N]` labels.
+
+The token comes from Deepgram's `/v1/auth/grant` (a 1-hour JWT scoped to
+`usage:write`), so `DEEPGRAM_API_KEY` only needs **Member** permission — no
+`keys:write` / Administrator key required.
 
 ## Setup
 
