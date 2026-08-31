@@ -17,8 +17,42 @@ POST https://tecxbot.vercel.app/api/transcribe
 ```
 
 Recordings cap at Vercel's ~4.5 MB request limit — fine for typical voice memos
-(a few minutes of m4a). Longer files would use the browser-direct upload flow
-(`api/deepgram-token.ts` + `public/upload.html`).
+(a few minutes of m4a). **Longer files (meetings, 10–60 min) use the browser
+upload page instead — see "Long recordings" below.**
+
+## Languages
+
+Transcription runs on Deepgram `nova-3`. Pass `language=`:
+
+| `language=` | Use for |
+| --- | --- |
+| `auto` (default) | Unsure — Deepgram detects the single dominant language (broad set incl. `vi`, `zh`). |
+| `en` | English. |
+| `zh-TW` | Traditional Chinese / Mandarin. |
+| `vi` | Vietnamese. |
+| `multi` | Code-switching **only** across EN + Spanish, French, German, Hindi, Russian, Portuguese, Japanese, Italian, Dutch. |
+
+**Caveat:** no Deepgram model code-switches across English + Chinese + Vietnamese
+in one file — `multi` does not include `zh` or `vi`. For a recording that mixes
+those, pick the **dominant** language; the other-language stretches degrade. A
+single-language recording is always most accurate with its language pinned
+explicitly rather than `auto`.
+
+## Long recordings (browser upload)
+
+For files past ~4.5 MB, open **`/transcribe.html`** (e.g.
+`https://tecxbot.vercel.app/transcribe.html`) on any device:
+
+1. Paste the `TRANSCRIBE_SECRET` once (kept in that browser's localStorage).
+2. Pick the spoken language, optionally set project / milestone / title / tags.
+3. Choose the audio or video file and tap **Transcribe & save**.
+
+The browser mints a short-lived Deepgram key from `/api/deepgram-token` (also
+gated by `TRANSCRIBE_SECRET`) and uploads the file **straight to Deepgram**, so
+Vercel's 4.5 MB request cap never applies. The finished transcript is shown,
+copyable, and POSTed back to `/api/transcribe` as JSON to file it into project
+memory — the same store the shortcut writes to. Multi-speaker files come back
+with `[Speaker N]` labels.
 
 ## Setup
 

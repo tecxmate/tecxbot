@@ -25,18 +25,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
   if (!isAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
 
+  const headerContentType = (typeof req.headers['content-type'] === 'string' && req.headers['content-type']) || '';
+  const raw = await readRawBody(req);
+  if (!raw.byteLength) return res.status(400).json({ error: 'Empty body — POST the audio bytes, or a JSON { text } to save.' });
+
+  // Save-only mode: the browser-direct upload flow (public/transcribe.html)
+  // transcribes large files straight to Deepgram — bypassing Vercel's ~4.5 MB
+  // request cap — then POSTs the finished transcript here as JSON to file it into
+  // project memory. Small text payload, no size limit, reuses the same auth.
+  if (headerContentType.toLowerCase().includes('application/json')) {
+    return saveOnly(req, res, raw);
+  }
+
   const apiKey = process.env.DEEPGRAM_API_KEY;
   if (!apiKey) return res.status(500).json({ error: 'DEEPGRAM_API_KEY not configured' });
 
-  const audio = await readRawBody(req);
-  if (!audio.byteLength) return res.status(400).json({ error: 'Empty body — POST the audio bytes.' });
-
   const language = pickLanguage(firstQuery(req.query.language));
-  const contentType = (typeof req.headers['content-type'] === 'string' && req.headers['content-type']) || 'audio/*';
+  const contentType = headerContentType || 'audio/*';
 
   let transcript: string;
   try {
-    const result = await transcribeWithDeepgram({ apiKey, audio: toArrayBuffer(audio), contentType, language });
+    const result = await transcribeWithDeepgram({ apiKey, audio: toArrayBuffer(raw), contentType, language });
     transcript = result.transcript;
   } catch (error) {
     console.error('[transcribe]', error);
@@ -65,6 +74,49 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   return res.status(200).json({ text: transcript, language, noteId });
+}
+
+// Save an already-produced transcript (from the browser-direct upload flow) into
+// project memory. The audio never touches this function, so there is no size limit.
+async function saveOnly(req: VercelRequest, res: VercelResponse, raw: Buffer): Promise<VercelResponse> {
+  let payload: Record<string, unknown>;
+  try {
+    payload = JSON.parse(raw.toString('utf8') || '{}') as Record<string, unknown>;
+  } catch {
+    return res.status(400).json({ error: 'Invalid JSON body.' });
+  }
+  const text = typeof payload.text === 'string' ? payload.text : '';
+  if (!text.trim()) return res.status(400).json({ error: 'JSON body must include a non-empty "text".' });
+  const language = typeof payload.language === 'string' ? payload.language : null;
+  // Query params still work as a fallback so a caller can pin project/milestone in the URL.
+  const str = (key: string) => (typeof payload[key] === 'string' && (payload[key] as string).trim() ? (payload[key] as string).trim() : firstQuery(req.query[key]));
+  try {
+    const note = await saveNote({
+      tenantId: process.env.CONNECTOR_TENANT_ID?.trim() || process.env.DEFAULT_TENANT_ID?.trim() || 'demo',
+      title: str('title') || `Voice memo ${new Date().toISOString().replace('T', ' ').slice(0, 16)}`,
+      body: text,
+      source: 'transcript',
+      project: str('project'),
+      milestone: str('milestone'),
+      tags: coerceList(payload.tags) ?? splitList(firstQuery(req.query.tags)),
+      participants: coerceList(payload.participants) ?? splitList(firstQuery(req.query.participants)),
+      occurredAt: typeof payload.occurredAt === 'number' ? payload.occurredAt : Date.now(),
+    });
+    return res.status(200).json({ text, language, noteId: note.id });
+  } catch (error) {
+    console.error('[transcribe] save-only failed:', error);
+    return res.status(500).json({ error: `Failed to save note: ${formatError(error)}` });
+  }
+}
+
+// Accept tags/participants as either a JSON array or a comma-separated string.
+function coerceList(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) {
+    const out = value.map((item) => String(item).trim()).filter(Boolean);
+    return out.length ? out : undefined;
+  }
+  if (typeof value === 'string') return splitList(value);
+  return undefined;
 }
 
 function isAuthorized(req: VercelRequest): boolean {
