@@ -127,7 +127,10 @@ or `get_file` (to open a document/PDF/text file). Images cap at 5 MB inline;
 text files are returned as readable text. LINE hands every file over as
 `application/octet-stream`, so `get_file` recovers text from the filename
 extension (`.md`, `.csv`, `.txt`, …) or by sniffing the bytes as UTF-8 — a
-Markdown spec comes back as text, not an opaque blob.
+Markdown spec comes back as text, not an opaque blob. A **`.zip`** is unzipped
+in-memory (dependency-free, `node:zlib`) and the text files inside are returned,
+so a plugin's `.php` source is readable without leaving the chat; it is bounded
+against decompression bombs (per-entry, total, and entry-count caps).
 
 **Durable media (Cloudflare R2).** By default media is fetched **live from LINE
 on demand**, which only works while LINE still retains it (a short window). To

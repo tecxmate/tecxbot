@@ -35,6 +35,8 @@ const { resolveSqlEndpoint, prepareParam } = await import(`${DIST}/src/core/sql.
 const { decideAssistant, buildAssistantPrompt } = await import(`${DIST}/src/botSystems/claudeAssistant.js`);
 const { handleTecxmateLineEvent, isTecxmateCaptureOnly } = await import(`${DIST}/src/botSystems/tecxmate.js`);
 const { decideFileRendering, fileNameFromPlaceholder } = await import(`${DIST}/src/connector/fileKind.js`);
+const { parseZip, looksLikeZip } = await import(`${DIST}/src/connector/zip.js`);
+const { deflateRawSync } = await import('node:zlib');
 const { parseSince } = await import(`${DIST}/src/connector/tools.js`);
 const mcpEndpoint = (await import(`${DIST}/api/mcp.js`)).default;
 const metaEndpoint = (await import(`${DIST}/api/facebook-webhook.js`)).default;
@@ -966,6 +968,76 @@ await test('image content-type is an image; oversized text is binary', () => {
   const big = decideFileRendering({ contentType: 'text/plain', fileName: 'big.txt', content: buf('x'.repeat(200)), maxTextBytes: 100 });
   assertEqual(big.kind, 'binary', 'over cap');
   assertEqual(big.reason, 'too_big', 'reason too_big');
+});
+
+// ---- zip handling ----
+// A .zip arrives as octet-stream; the connector unzips it in-memory and returns
+// the text files inside. Build real zips here (stored + deflate) and read back.
+
+console.log('\nzip handling');
+
+// Minimal ZIP writer for the tests (CRCs left 0 — the parser ignores them).
+function makeZip(files) {
+  const enc = (s) => Buffer.from(s, 'utf8');
+  const local = [];
+  const central = [];
+  let offset = 0;
+  for (const f of files) {
+    const nameBuf = enc(f.name);
+    const raw = Buffer.isBuffer(f.data) ? f.data : Buffer.from(f.data, 'utf8');
+    const method = f.method ?? 8;
+    const comp = method === 8 ? deflateRawSync(raw) : raw;
+    const lh = Buffer.alloc(30);
+    lh.writeUInt32LE(0x04034b50, 0); lh.writeUInt16LE(20, 4); lh.writeUInt16LE(method, 8);
+    lh.writeUInt32LE(comp.length, 18); lh.writeUInt32LE(raw.length, 22); lh.writeUInt16LE(nameBuf.length, 26);
+    local.push(lh, nameBuf, comp);
+    const ch = Buffer.alloc(46);
+    ch.writeUInt32LE(0x02014b50, 0); ch.writeUInt16LE(20, 4); ch.writeUInt16LE(20, 6); ch.writeUInt16LE(method, 10);
+    ch.writeUInt32LE(comp.length, 20); ch.writeUInt32LE(raw.length, 24); ch.writeUInt16LE(nameBuf.length, 28);
+    ch.writeUInt32LE(offset, 42);
+    central.push(ch, nameBuf);
+    offset += lh.length + nameBuf.length + comp.length;
+  }
+  const localBuf = Buffer.concat(local);
+  const centralBuf = Buffer.concat(central);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(files.length, 8); eocd.writeUInt16LE(files.length, 10);
+  eocd.writeUInt32LE(centralBuf.length, 12); eocd.writeUInt32LE(localBuf.length, 16);
+  const all = Buffer.concat([localBuf, centralBuf, eocd]);
+  return all.buffer.slice(all.byteOffset, all.byteOffset + all.byteLength);
+}
+const decode = (ab) => new TextDecoder('utf-8').decode(new Uint8Array(ab));
+
+await test('looksLikeZip detects the PK signature', () => {
+  const zip = makeZip([{ name: 'a.txt', data: 'hi', method: 0 }]);
+  assertEqual(looksLikeZip(zip), true, 'zip detected');
+  assertEqual(looksLikeZip(new TextEncoder().encode('not a zip').buffer), false, 'text is not a zip');
+});
+
+await test('parseZip reads stored and deflated text entries', () => {
+  const zip = makeZip([
+    { name: 'ogsm-bridge.php', data: '<?php\n// webhook handler\n', method: 8 },
+    { name: 'readme.txt', data: 'stored entry', method: 0 },
+  ]);
+  const entries = parseZip(zip).filter((e) => !e.isDir);
+  assertEqual(entries.length, 2, 'two files');
+  const php = entries.find((e) => e.name === 'ogsm-bridge.php');
+  assertIncludes(decode(php.content), 'webhook handler', 'deflated content recovered');
+  const readme = entries.find((e) => e.name === 'readme.txt');
+  assertEqual(decode(readme.content), 'stored entry', 'stored content recovered');
+});
+
+await test('parseZip rejects a non-zip', () => {
+  let threw = false;
+  try { parseZip(new TextEncoder().encode('just text, not a zip').buffer); } catch { threw = true; }
+  assert(threw, 'throws on non-zip');
+});
+
+await test('parseZip guards against a decompression bomb (per-entry cap)', () => {
+  const zip = makeZip([{ name: 'big.txt', data: 'A'.repeat(5000), method: 8 }]);
+  let threw = false;
+  try { parseZip(zip, { maxEntryBytes: 100, maxTotalBytes: 100 }); } catch { threw = true; }
+  assert(threw, 'refuses to expand past the cap');
 });
 
 // ---- result ----
