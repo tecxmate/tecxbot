@@ -155,10 +155,9 @@ async function executeMcpAgentCommand(command: McpAgentCommand, source: LineSour
 async function runTickerSnapshot(config: Extract<TenantConfig['botSystem'], { kind: 'mcp_agent' }>, args: string[], source: LineSource | undefined, runtime: LineWebhookRuntime): Promise<BotReply> {
   const ticker = parseTicker(args[0]);
   if (!ticker) return usageReply('/q <ticker>\nExample: /q 2330', source);
-  const imageUrl = stockChartUrl({ ticker, days: 90, tenantId: runtime.tenant.id, channelId: runtime.channel.id });
   try {
     const card = await callMcpTool(config, 'beginner_stock_card', { ticker_id: ticker });
-    return { imageUrl, text: formatBeginnerStockCard(card.result), buttons: tickerReportButtons(source, ticker) };
+    return { text: formatBeginnerStockCard(card.result), buttons: tickerReportButtons(source, ticker) };
   } catch (error) {
     console.warn('[mcp-agent] beginner_stock_card failed, falling back:', error);
   }
@@ -167,7 +166,7 @@ async function runTickerSnapshot(config: Extract<TenantConfig['botSystem'], { ki
     ['q_valuation', { ticker_id: ticker }],
     ['sc_ticker_momentum', { ticker_id: ticker, window: parseWindow(args[1]), top_n: 1 }],
   ]);
-  return { imageUrl, text: formatTickerReport(ticker, calls), buttons: tickerReportButtons(source, ticker) };
+  return { text: formatTickerReport(ticker, calls), buttons: tickerReportButtons(source, ticker) };
 }
 
 async function runChartCommand(args: string[], source: LineSource | undefined, runtime: LineWebhookRuntime): Promise<BotReply> {
@@ -175,8 +174,7 @@ async function runChartCommand(args: string[], source: LineSource | undefined, r
   if (!ticker) return usageReply('/chart <ticker>\nExample: /chart 2330', source);
   const days = parseLimit(args[1], 90);
   return {
-    imageUrl: stockChartUrl({ ticker, days, tenantId: runtime.tenant.id, channelId: runtime.channel.id }),
-    text: `Price chart ${ticker}\n\nClose-price line, ${days} trading days.\nData source: MCP price_history.`,
+    text: `${ticker}\n\nRecent price context, ${days} trading days.\nData source: MCP price_history.`,
     buttons: tickerReportButtons(source, ticker),
   };
 }
@@ -1312,23 +1310,6 @@ function parseLimit(value: string | undefined, fallback: number) {
   return Math.max(1, Math.min(200, Math.round(parsed)));
 }
 
-function stockChartUrl(input: { ticker: string; days: number; tenantId: string; channelId: string }) {
-  const baseUrl = publicBaseUrl().replace(/\/$/, '');
-  const params = new URLSearchParams({
-    ticker: input.ticker,
-    days: String(input.days),
-    tenant: input.tenantId,
-    channel: input.channelId,
-  });
-  return `${baseUrl}/api/stock-chart?${params.toString()}`;
-}
-
-function publicBaseUrl() {
-  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL;
-  if (process.env.VERCEL_PROJECT_PRODUCTION_URL) return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
-  return 'https://tecxbot.vercel.app';
-}
 
 function parseBriefTemplate(value: string | undefined): WatchlistBriefTemplate | undefined {
   const template = value?.toLowerCase();
