@@ -340,5 +340,6 @@ organized and readable from any Claude client, not locked to LINE.
 Notes need `CONNECTOR_DATABASE_URL` to be durable (they fall back to an in-memory
 store otherwise, like conversations). The table (`connector_notes`) is created
 automatically on the first save; see `docs/connector-schema.sql`. Because it is
-platform-agnostic, anything that can reach `/api/mcp` — or a future
-speech-to-text endpoint — can file into the same memory Claude reads.
+platform-agnostic, anything that can reach `/api/mcp` — or the speech-to-text
+endpoint `POST /api/transcribe` (record → Share → text, see `docs/transcribe.md`)
+— can file into the same memory Claude reads.
