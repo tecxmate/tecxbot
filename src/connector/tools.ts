@@ -21,6 +21,7 @@ import { fetchMediaBytes } from './media.js';
 import { isR2Configured } from '../core/r2.js';
 import { isReplyEnabled, isReviewMode, monthlyCap, replyAllowlist, replyQuota, reviewConversationId, sendLineReply, type ReplyOutcome, type ReplyReason } from './reply.js';
 import { decideFileRendering, fileNameFromPlaceholder } from './fileKind.js';
+import { looksLikeZip, parseZip } from './zip.js';
 
 // A tool normally returns text; `content` lets it return richer MCP blocks
 // (e.g. an image), which the server uses in place of the wrapped text.
@@ -374,7 +375,7 @@ export const connectorTools: ToolDefinition[] = [
     name: 'get_file',
     title: 'Open a file from a conversation',
     description:
-      'Fetch a non-image file a client sent on LINE (a document, PDF, text/CSV, audio). Pass the conversation_id and the message\'s `mediaId`. Text-based files are returned as text you can read; images are handled by get_image instead. Served from durable storage when archived, otherwise live from LINE while it still retains the media.',
+      'Fetch a non-image file a client sent on LINE (a document, PDF, text/CSV, code, or a .zip archive). Pass the conversation_id and the message\'s `mediaId`. Text-based files are returned as text you can read; a .zip is unzipped and the text files inside are returned; images are handled by get_image instead. Served from durable storage when archived, otherwise live from LINE while it still retains the media.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -408,6 +409,12 @@ export const connectorTools: ToolDefinition[] = [
       const label = `File${fileName ? ` "${fileName}"` : ''} from ${conversationLabel(conversation)}, sent by ${target.senderName || shortId(target.senderId) || 'client'} at ${formatTimestamp(target.at)} · ${media.contentType} · ${(bytes / 1024).toFixed(0)} KB.`;
       const structured = { conversationId, messageId, fileName: fileName ?? null, mimeType: media.contentType, bytes, sentAt: new Date(target.at).toISOString(), source: media.source };
 
+      // A zip: unzip in-memory and return the text files inside, rather than
+      // reporting an opaque archive.
+      if (looksLikeZip(media.content) || /\.zip$/i.test(fileName ?? '') || /zip/i.test(media.contentType)) {
+        return renderArchive(media.content, fileName, label, structured);
+      }
+
       const rendering = decideFileRendering({ contentType: media.contentType, fileName, content: media.content, maxTextBytes: MAX_TEXT_FILE_BYTES });
       if (rendering.kind === 'image') {
         const base64 = Buffer.from(media.content).toString('base64');
@@ -432,6 +439,45 @@ export const connectorTools: ToolDefinition[] = [
 
 function imageError(message: string): ToolOutput {
   return { text: message, structured: { error: message } };
+}
+
+// Unzip a fetched archive and render the text files inside. Text content goes in
+// both the text block and structuredContent (the connector surfaces the latter).
+// Bounded against zip bombs by parseZip and by an inline text budget here.
+function renderArchive(content: ArrayBuffer, fileName: string | undefined, label: string, structured: Record<string, unknown>): ToolOutput {
+  let entries;
+  try {
+    entries = parseZip(content);
+  } catch (error) {
+    const message = `Couldn't read this zip: ${formatError(error)}.`;
+    return { text: `${label}\n\n${message}`, structured: { ...structured, archive: { error: formatError(error) } } };
+  }
+
+  const files = entries.filter((entry) => !entry.isDir);
+  if (!files.length) return { text: `${label}\n\nThe archive is empty.`, structured: { ...structured, archive: { fileCount: 0, entries: [] } } };
+
+  const listing = files.map((entry) => `- ${entry.name} (${(entry.content.byteLength / 1024).toFixed(1)} KB)`);
+  const sections: string[] = [];
+  const archiveEntries: Array<Record<string, unknown>> = [];
+  let budget = MAX_TEXT_FILE_BYTES;
+
+  for (const entry of files) {
+    if (budget <= 0) { sections.push('----- (remaining files omitted — inline text budget reached; ask for a specific file) -----'); break; }
+    const rendering = decideFileRendering({ contentType: '', fileName: entry.name, content: entry.content, maxTextBytes: Math.min(budget, 256 * 1024) });
+    if (rendering.kind === 'text') {
+      sections.push(`----- ${entry.name} -----\n${rendering.text}`);
+      archiveEntries.push({ name: entry.name, bytes: entry.content.byteLength, kind: 'text', text: rendering.text });
+      budget -= rendering.text.length;
+    } else {
+      const note = rendering.kind === 'image' ? 'image, not shown' : rendering.reason === 'too_big' ? 'too large to show inline' : 'binary, not shown';
+      sections.push(`----- ${entry.name} — ${note} -----`);
+      archiveEntries.push({ name: entry.name, bytes: entry.content.byteLength, kind: rendering.kind === 'image' ? 'image' : 'binary' });
+    }
+  }
+
+  const heading = `Archive ${fileName ? `"${fileName}" ` : ''}— ${files.length} file${files.length === 1 ? '' : 's'}:`;
+  const body = [heading, ...listing, '', ...sections].join('\n');
+  return { text: `${label}\n\n${body}`, structured: { ...structured, archive: { fileCount: files.length, entries: archiveEntries } } };
 }
 
 function replyStatusLine(): string {
