@@ -1,33 +1,22 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-// Mint a short-lived Deepgram API key so the browser can POST audio
+// Issue a short-lived Deepgram temporary token so the browser can POST audio
 // directly to Deepgram, bypassing the 4.5MB Vercel Function body limit.
-// The minted key has scope `usage:write` only and expires after 10 minutes.
+//
+// Uses POST /v1/auth/grant, which returns a JWT scoped to usage:write and needs
+// only a Member-permission key — no keys:write / Administrator key. The token is
+// used by the client as `Authorization: Bearer <token>` (not `Token`).
 //
 // Gated by TRANSCRIBE_SECRET (same secret as /api/transcribe): without it the
-// endpoint fails closed, so it is not an open Deepgram-key vending machine.
-// The caller passes the secret as ?key= or an Authorization: Bearer header.
+// endpoint fails closed. The caller passes the secret as ?key= or an
+// Authorization: Bearer header.
 
 export const config = { maxDuration: 15 };
 
-const TTL_SECONDS = 600;
-
-// Cache project ID for the lifetime of the function instance to skip a roundtrip.
-let cachedProjectId: string | null = null;
-
-async function getProjectId(masterKey: string): Promise<string> {
-  if (cachedProjectId) return cachedProjectId;
-  const res = await fetch('https://api.deepgram.com/v1/projects', {
-    headers: { Authorization: `Token ${masterKey}` },
-  });
-  if (!res.ok) throw new Error(`Failed to list Deepgram projects: ${res.status} ${await res.text()}`);
-  const data = await res.json() as { projects?: Array<{ project_id: string }> };
-  const id = data.projects?.[0]?.project_id;
-  if (!id) throw new Error('No Deepgram projects available for this account');
-  cachedProjectId = id;
-  return id;
-}
+// Deepgram's grant TTL defaults to 30s — far too short to upload a long meeting
+// recording. Ask for the max (1 hour) so the upload finishes before it expires.
+const TTL_SECONDS = 3600;
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
@@ -36,17 +25,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (!masterKey) return res.status(500).json({ error: 'DEEPGRAM_API_KEY not configured' });
 
   try {
-    const projectId = await getProjectId(masterKey);
-    const keyRes = await fetch(`https://api.deepgram.com/v1/projects/${projectId}/keys`, {
+    const grantRes = await fetch('https://api.deepgram.com/v1/auth/grant', {
       method: 'POST',
       headers: { Authorization: `Token ${masterKey}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ comment: 'telegram-browser-transcription', scopes: ['usage:write'], time_to_live_in_seconds: TTL_SECONDS }),
+      body: JSON.stringify({ ttl_seconds: TTL_SECONDS }),
     });
-    if (!keyRes.ok) throw new Error(`Failed to mint key: ${keyRes.status} ${await keyRes.text()}`);
-    const data = await keyRes.json() as { key: string };
-    return res.status(200).json({ key: data.key, expiresAt: Date.now() + TTL_SECONDS * 1000 });
+    if (!grantRes.ok) throw new Error(`Failed to grant token: ${grantRes.status} ${await grantRes.text()}`);
+    const data = await grantRes.json() as { access_token?: string; expires_in?: number };
+    if (!data.access_token) throw new Error('Deepgram returned no access_token');
+    return res.status(200).json({ token: data.access_token, scheme: 'Bearer', expiresAt: Date.now() + (data.expires_in ?? TTL_SECONDS) * 1000 });
   } catch (err) {
-    const message = err instanceof Error ? err.message : 'Token mint failed';
+    const message = err instanceof Error ? err.message : 'Token grant failed';
     console.error('[deepgram-token]', message);
     return res.status(500).json({ error: message });
   }
