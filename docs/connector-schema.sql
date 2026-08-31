@@ -53,6 +53,32 @@ create unique index if not exists connector_messages_external_idx
   on connector_messages (conversation_id, external_message_id)
   where external_message_id is not null;
 
+-- Project memory: durable, taggable notes and transcripts, independent of any
+-- chat platform. Created automatically by src/core/noteStore.ts on the first
+-- save_note. Participants and tags are stored as JSON text (portable across the
+-- SQL-over-HTTP client); filtering by tag/participant happens in the app.
+create table if not exists connector_notes (
+  id text primary key,
+  tenant_id text not null,
+  title text not null,
+  body text not null,
+  source text not null default 'note',
+  project text,
+  milestone text,
+  participants_json text not null default '[]',
+  tags_json text not null default '[]',
+  conversation_id text,
+  occurred_at bigint,
+  created_at bigint not null,
+  updated_at bigint not null
+);
+
+create index if not exists connector_notes_recent_idx
+  on connector_notes (tenant_id, coalesce(occurred_at, created_at) desc);
+
+create index if not exists connector_notes_project_idx
+  on connector_notes (tenant_id, project);
+
 -- Retention. The `connector-prune` cron job does this for you on a schedule
 -- (GET /api/cron?job=connector-prune), deleting messages older than
 -- CONNECTOR_RETENTION_DAYS and then any conversation left empty. To run it by

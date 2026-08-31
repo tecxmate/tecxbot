@@ -22,6 +22,7 @@ import { isR2Configured } from '../core/r2.js';
 import { isReplyEnabled, isReviewMode, monthlyCap, replyAllowlist, replyQuota, reviewConversationId, sendLineReply, type ReplyOutcome, type ReplyReason } from './reply.js';
 import { decideFileRendering, fileNameFromPlaceholder } from './fileKind.js';
 import { looksLikeZip, parseZip } from './zip.js';
+import { getNote, isNoteStoreDurable, listNotes, saveNote, searchNotes, updateNote, type Note } from '../core/noteStore.js';
 
 // A tool normally returns text; `content` lets it return richer MCP blocks
 // (e.g. an image), which the server uses in place of the wrapped text.
@@ -435,6 +436,182 @@ export const connectorTools: ToolDefinition[] = [
       return { text: `${label}\n\nThis file can't be shown inline here (${why}). It is ${media.source === 'r2' ? 'archived durably' : 'still available live from LINE'}.`, structured };
     },
   },
+
+  // ---- project memory: durable, taggable notes & transcripts ----
+
+  {
+    name: 'save_note',
+    title: 'Save a note or transcript to project memory',
+    description:
+      'Save a note, meeting transcript, or decision into durable project memory (Neon Postgres), so it stays accessible across sessions and clients — independent of LINE. Tag it with what keeps the project organized: project, milestone, participants, free-form tags, and occurred_at (when the meeting/recording actually happened). Use this to file a transcript you were handed, or to record a decision. Returns the note id.',
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'A short title for the note.' },
+        body: { type: 'string', description: 'The full text — the transcript, notes, or decision.' },
+        project: { type: 'string', description: 'Which project this belongs to (free-form, e.g. "ogsmbooster").' },
+        milestone: { type: 'string', description: 'The milestone/phase this belongs to (free-form).' },
+        participants: { type: 'array', items: { type: 'string' }, description: 'Who was involved (names).' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Free-form tags for retrieval.' },
+        occurred_at: sinceProperty2('When the meeting/recording happened — a relative window like "2h" ago, an ISO date/time, or omit for now.'),
+        source: { type: 'string', description: 'Where it came from, e.g. "transcript", "meeting", "note". Default "note".' },
+        conversation_id: { type: 'string', description: 'Optional: link to a captured conversation this note relates to.' },
+        tenant_id: tenantProperty,
+      },
+      required: ['title', 'body'],
+      additionalProperties: false,
+    },
+    async handler(args) {
+      const title = readString(args.title);
+      const body = readString(args.body);
+      if (!title || !body) throw new Error('title and body are required.');
+      const note = await saveNote({
+        tenantId: enforcedTenant(args.tenant_id) ?? DEFAULT_NOTE_TENANT,
+        title,
+        body,
+        project: readString(args.project),
+        milestone: readString(args.milestone),
+        participants: readStringArray(args.participants),
+        tags: readStringArray(args.tags),
+        source: readString(args.source),
+        conversationId: readString(args.conversation_id),
+        occurredAt: parseWhen(readString(args.occurred_at)),
+      });
+      return { text: `Saved note ${note.id}: "${note.title}".${note.project ? ` project: ${note.project}` : ''}`, structured: { saved: true, ...serializeNote(note) } };
+    },
+  },
+
+  {
+    name: 'update_note',
+    title: 'Tag or edit a note in project memory',
+    description:
+      'Update a saved note: set or change its project, milestone, participants, tags, title, occurred_at, or body. Pass note_id and only the fields to change. Use add_tags / add_participants to append without replacing. This is how you keep project memory organized over time.',
+    annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+    inputSchema: {
+      type: 'object',
+      properties: {
+        note_id: { type: 'string', description: 'The id from save_note / list_notes.' },
+        title: { type: 'string' },
+        body: { type: 'string' },
+        project: { type: 'string' },
+        milestone: { type: 'string' },
+        participants: { type: 'array', items: { type: 'string' }, description: 'Replace the participant list.' },
+        add_participants: { type: 'array', items: { type: 'string' }, description: 'Append participants without replacing.' },
+        tags: { type: 'array', items: { type: 'string' }, description: 'Replace the tag list.' },
+        add_tags: { type: 'array', items: { type: 'string' }, description: 'Append tags without replacing.' },
+        occurred_at: sinceProperty2('When the meeting/recording happened — relative, ISO date/time, or omit to leave unchanged.'),
+        tenant_id: tenantProperty,
+      },
+      required: ['note_id'],
+      additionalProperties: false,
+    },
+    async handler(args) {
+      const id = readString(args.note_id);
+      if (!id) throw new Error('note_id is required.');
+      const updated = await updateNote(id, {
+        tenantId: enforcedTenant(args.tenant_id),
+        title: readString(args.title),
+        body: typeof args.body === 'string' ? args.body : undefined,
+        project: args.project !== undefined ? (readString(args.project) ?? '') : undefined,
+        milestone: args.milestone !== undefined ? (readString(args.milestone) ?? '') : undefined,
+        participants: args.participants !== undefined ? readStringArray(args.participants) : undefined,
+        addParticipants: readStringArray(args.add_participants),
+        tags: args.tags !== undefined ? readStringArray(args.tags) : undefined,
+        addTags: readStringArray(args.add_tags),
+        occurredAt: args.occurred_at !== undefined ? parseWhen(readString(args.occurred_at)) : undefined,
+      });
+      if (!updated) return { text: `No note found with id "${id}".`, structured: { updated: false, noteId: id } };
+      return { text: `Updated note ${updated.id}.`, structured: { updated: true, ...serializeNote(updated) } };
+    },
+  },
+
+  {
+    name: 'list_notes',
+    title: 'List project-memory notes',
+    description: 'Browse saved notes and transcripts, newest first (by when they occurred). Filter by project, milestone, tag, participant, or a time window. Use it to pull the context for a project or milestone.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'Only notes in this project.' },
+        milestone: { type: 'string', description: 'Only notes in this milestone.' },
+        tag: { type: 'string', description: 'Only notes carrying this tag.' },
+        participant: { type: 'string', description: 'Only notes involving this participant (substring match).' },
+        since: sinceProperty,
+        limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Maximum notes to return. Default 25.' },
+        tenant_id: tenantProperty,
+      },
+      additionalProperties: false,
+    },
+    async handler(args) {
+      const notes = await listNotes({
+        tenantId: enforcedTenant(args.tenant_id),
+        project: readString(args.project),
+        milestone: readString(args.milestone),
+        tag: readString(args.tag),
+        participant: readString(args.participant),
+        since: parseSince(readString(args.since)),
+        limit: readInt(args.limit, 25, 1, 200),
+      });
+      if (!notes.length) return { text: notesEmptyText(), structured: { notes: [] } };
+      const lines = notes.map((note) => `- ${note.title}${note.project ? ` · ${note.project}` : ''}${note.milestone ? ` / ${note.milestone}` : ''} · ${formatTimestamp(note.occurredAt ?? note.createdAt)}\n  id: ${note.id}${note.tags.length ? ` · tags: ${note.tags.join(', ')}` : ''}`);
+      return { text: [`# Project-memory notes (${notes.length})`, notesBackendLine(), ...lines].filter(Boolean).join('\n'), structured: { notes: notes.map(serializeNote) } };
+    },
+  },
+
+  {
+    name: 'search_notes',
+    title: 'Search project-memory notes',
+    description: 'Find saved notes and transcripts whose title or body contains a phrase. Use it to answer "what did we decide about X?" from project memory.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Text to look for (case-insensitive).' },
+        project: { type: 'string', description: 'Restrict to one project.' },
+        limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Maximum matches. Default 25.' },
+        tenant_id: tenantProperty,
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    async handler(args) {
+      const query = readString(args.query);
+      if (!query) throw new Error('query is required.');
+      const notes = await searchNotes({ query, tenantId: enforcedTenant(args.tenant_id), project: readString(args.project), limit: readInt(args.limit, 25, 1, 200) });
+      if (!notes.length) return { text: `No note matches "${query}".`, structured: { query, notes: [] } };
+      const lines = notes.map((note) => `- ${note.title}${note.project ? ` · ${note.project}` : ''} · ${formatTimestamp(note.occurredAt ?? note.createdAt)}\n  id: ${note.id} — ${collapse(note.body)}`);
+      return { text: [`# ${notes.length} note match${notes.length === 1 ? '' : 'es'} for "${query}"`, ...lines].join('\n'), structured: { query, notes: notes.map(serializeNote) } };
+    },
+  },
+
+  {
+    name: 'get_note',
+    title: 'Read a project-memory note',
+    description: 'Read one saved note or transcript in full, with its tags and metadata. Pass the note_id from list_notes / search_notes.',
+    inputSchema: {
+      type: 'object',
+      properties: { note_id: { type: 'string' }, tenant_id: tenantProperty },
+      required: ['note_id'],
+      additionalProperties: false,
+    },
+    async handler(args) {
+      const id = readString(args.note_id);
+      if (!id) throw new Error('note_id is required.');
+      const note = await getNote(id, enforcedTenant(args.tenant_id));
+      if (!note) return { text: `No note found with id "${id}".`, structured: { found: false, noteId: id } };
+      const meta = [
+        `# ${note.title}`,
+        `id: ${note.id}`,
+        note.project ? `project: ${note.project}` : '',
+        note.milestone ? `milestone: ${note.milestone}` : '',
+        note.participants.length ? `participants: ${note.participants.join(', ')}` : '',
+        note.tags.length ? `tags: ${note.tags.join(', ')}` : '',
+        `occurred: ${formatTimestamp(note.occurredAt ?? note.createdAt)}`,
+        `source: ${note.source}`,
+      ].filter(Boolean).join('\n');
+      return { text: `${meta}\n\n${note.body}`, structured: { found: true, ...serializeNote(note) } };
+    },
+  },
 ];
 
 function imageError(message: string): ToolOutput {
@@ -619,10 +796,56 @@ function serializeMessage(message: StoredMessage) {
   };
 }
 
+// ---- project-memory helpers ----
+
+const DEFAULT_NOTE_TENANT = process.env.CONNECTOR_TENANT_ID?.trim() || process.env.DEFAULT_TENANT_ID?.trim() || 'demo';
+
+function sinceProperty2(description: string) {
+  return { type: 'string', description };
+}
+
+function parseWhen(raw?: string): number | undefined {
+  return parseSince(raw);
+}
+
+function serializeNote(note: Note) {
+  return {
+    id: note.id,
+    title: note.title,
+    project: note.project ?? null,
+    milestone: note.milestone ?? null,
+    participants: note.participants,
+    tags: note.tags,
+    source: note.source,
+    conversationId: note.conversationId ?? null,
+    occurredAt: note.occurredAt ? new Date(note.occurredAt).toISOString() : null,
+    createdAt: new Date(note.createdAt).toISOString(),
+    updatedAt: new Date(note.updatedAt).toISOString(),
+    body: note.body,
+  };
+}
+
+function notesBackendLine(): string {
+  return isNoteStoreDurable() ? '' : '> Notes are in-memory (no CONNECTOR_DATABASE_URL) — they are lost on cold start. Set CONNECTOR_DATABASE_URL for durable project memory.';
+}
+
+function notesEmptyText(): string {
+  return `No notes in project memory yet${isNoteStoreDurable() ? '' : ' (in-memory store — set CONNECTOR_DATABASE_URL to persist)'}. Save one with save_note.`;
+}
+
 // ---- argument helpers ----
 
 function readString(value: unknown) {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function readStringArray(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) {
+    const out = value.filter((item): item is string => typeof item === 'string').map((item) => item.trim()).filter(Boolean);
+    return out.length ? out : undefined;
+  }
+  const single = readString(value);
+  return single ? [single] : undefined;
 }
 
 function readInt(value: unknown, fallback: number, min: number, max: number) {

@@ -113,6 +113,8 @@ curl -s https://your-domain.vercel.app/api/mcp \
 | `get_image` | Actually *see* an image sent in a LINE conversation (by anyone in it). |
 | `get_file` | Open a non-image file (document, PDF, text/CSV) sent in a conversation. |
 | `send_line_reply` | **Write** — reply into a LINE conversation as the TECXMATE PM. Only present when replies are enabled (see §10); the connector is read-only otherwise. |
+| `save_note` / `update_note` | **Write** — file a note or transcript into durable **project memory** and tag it (project, milestone, participants, tags, occurred_at). See §11. |
+| `list_notes` / `search_notes` / `get_note` | Read project memory — browse by project/milestone/tag/participant, search the text, open one in full. |
 | `connector_status` | Storage backend, capture state, replies, media archival, configured channels, how much history exists. Use it when a tool returns nothing. |
 
 Time windows accept relative values (`24h`, `7d`, `2w`), an ISO date
@@ -317,3 +319,26 @@ draft-in-chat.
 The LINE channel access token (already configured) delivers the message — that's
 the bot's messaging credential, not an AI key. Full walkthrough, the PM prompt,
 and the safety model are in **`docs/tecxmate-pm.md`**.
+
+## 11. Project memory (durable notes & transcripts)
+
+The connector also holds **project memory**: notes and transcripts Claude curates,
+saved in the same Neon Postgres, **independent of any chat platform**. This is
+where a meeting transcript (e.g. one produced by speech-to-text and shared from a
+phone), a decision, or a spec summary lives — so the whole project stays
+organized and readable from any Claude client, not locked to LINE.
+
+- `save_note({ title, body, project?, milestone?, participants?, tags?, occurred_at?, source?, conversation_id? })`
+  files a note. `occurred_at` is when the meeting/recording actually happened
+  (relative like `2h`, an ISO date/time, or omit for now).
+- `update_note({ note_id, ... })` tags/edits it — set `project`, `milestone`,
+  `participants`, `tags`, or `title`; use `add_tags` / `add_participants` to
+  append without replacing.
+- `list_notes({ project?, milestone?, tag?, participant?, since? })`,
+  `search_notes({ query })`, and `get_note({ note_id })` read it back.
+
+Notes need `CONNECTOR_DATABASE_URL` to be durable (they fall back to an in-memory
+store otherwise, like conversations). The table (`connector_notes`) is created
+automatically on the first save; see `docs/connector-schema.sql`. Because it is
+platform-agnostic, anything that can reach `/api/mcp` — or a future
+speech-to-text endpoint — can file into the same memory Claude reads.
