@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex" />
+  <title>Transcribe · project memory</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#0f172a; --card:#1e293b; --ink:#e2e8f0; --muted:#94a3b8; --line:#334155; --field:#0f172a; --accent:#6366f1; --ok:#4ade80; --err:#f87171; }
+    * { box-sizing: border-box; }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--ink); display:flex; min-height:100vh; align-items:flex-start; justify-content:center; padding:24px; }
+    .card { width:100%; max-width:520px; background:var(--card); border-radius:16px; padding:28px; box-shadow:0 12px 40px rgba(0,0,0,0.4); }
+    h1 { font-size:20px; margin:0 0 4px; }
+    p.sub { margin:0 0 18px; color:var(--muted); font-size:14px; line-height:1.5; }
+    label { display:block; font-size:13px; color:var(--muted); margin:16px 0 6px; }
+    select, input, textarea { width:100%; padding:12px; border-radius:10px; border:1px solid var(--line); background:var(--field); color:var(--ink); font-size:15px; font-family:inherit; }
+    .row { display:flex; gap:12px; }
+    .row > div { flex:1; }
+    button { width:100%; margin-top:22px; padding:14px; border:0; border-radius:10px; background:var(--accent); color:#fff; font-size:16px; font-weight:600; cursor:pointer; }
+    button:disabled { opacity:0.5; cursor:not-allowed; }
+    .hint { font-size:12px; color:var(--muted); margin-top:6px; line-height:1.5; }
+    .status { margin-top:18px; font-size:14px; min-height:20px; }
+    .status.error { color:var(--err); }
+    .status.ok { color:var(--ok); }
+    .bar { margin-top:12px; height:6px; background:var(--line); border-radius:999px; overflow:hidden; display:none; }
+    .bar > div { height:100%; width:0%; background:var(--accent); transition:width 0.2s; }
+    pre { margin-top:16px; padding:12px; background:var(--field); border-radius:10px; max-height:280px; overflow:auto; white-space:pre-wrap; font-size:13px; display:none; }
+    .copy { margin-top:10px; background:transparent; border:1px solid var(--line); color:var(--ink); display:none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🎙️ Audio → Text → Project memory</h1>
+    <p class="sub">Upload a recording of any length. It transcribes straight through Deepgram (no size limit) and files the text into project memory. No LINE involved.</p>
+
+    <label for="secret">Access secret (TRANSCRIBE_SECRET)</label>
+    <input type="password" id="secret" placeholder="paste once — remembered on this device" autocomplete="off" />
+    <div class="hint">Stored only in this browser (localStorage). Same secret the phone shortcut uses.</div>
+
+    <label for="language">Spoken language</label>
+    <select id="language">
+      <option value="auto">Auto-detect (single language)</option>
+      <option value="en">English</option>
+      <option value="zh-TW">中文 (Traditional / zh-TW)</option>
+      <option value="vi">Tiếng Việt</option>
+      <option value="multi">Mixed — EN + European (code-switching)</option>
+    </select>
+    <div class="hint">Deepgram code-switches only across EN + 9 European/Indic/JP languages. For a recording mixing EN + 中文 or + Việt, pick the <em>dominant</em> language — no model transcribes all three together.</div>
+
+    <div class="row">
+      <div>
+        <label for="project">Project (optional)</label>
+        <input type="text" id="project" placeholder="e.g. ogsmbooster" />
+      </div>
+      <div>
+        <label for="milestone">Milestone (optional)</label>
+        <input type="text" id="milestone" placeholder="e.g. 2026-Q3" />
+      </div>
+    </div>
+
+    <label for="title">Title (optional)</label>
+    <input type="text" id="title" placeholder="defaults to a timestamp" />
+
+    <label for="tags">Tags (optional, comma-separated)</label>
+    <input type="text" id="tags" placeholder="e.g. meeting, client" />
+
+    <label for="file">Audio or video file</label>
+    <input type="file" id="file" accept="audio/*,video/*" />
+
+    <button id="go">Transcribe &amp; save</button>
+    <div class="bar" id="bar"><div></div></div>
+    <div class="status" id="status"></div>
+    <pre id="result"></pre>
+    <button class="copy" id="copy">Copy transcript</button>
+  </div>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const statusEl = $('status'), resultEl = $('result'), bar = $('bar'), barFill = bar.querySelector('div'), goBtn = $('go'), copyBtn = $('copy'), secretEl = $('secret');
+
+    // Remember the secret on this device only.
+    try { const saved = localStorage.getItem('transcribe_secret'); if (saved) secretEl.value = saved; } catch (_) {}
+    secretEl.addEventListener('change', () => { try { localStorage.setItem('transcribe_secret', secretEl.value.trim()); } catch (_) {} });
+
+    function setStatus(msg, kind) { statusEl.textContent = msg; statusEl.className = 'status' + (kind ? ' ' + kind : ''); }
+
+    function deepgramContentType(file) {
+      const t = (file.type || '').toLowerCase();
+      if (t) return t;
+      const name = file.name.toLowerCase();
+      if (name.endsWith('.mp3')) return 'audio/mpeg';
+      if (name.endsWith('.wav')) return 'audio/wav';
+      if (name.endsWith('.m4a') || name.endsWith('.mp4')) return 'audio/mp4';
+      if (name.endsWith('.webm')) return 'audio/webm';
+      if (name.endsWith('.ogg') || name.endsWith('.opus')) return 'audio/ogg';
+      return 'application/octet-stream';
+    }
+
+    // Upload with a progress bar so a large file visibly moves.
+    function postWithProgress(url, headers, body) {
+      return new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', url);
+        for (const [k, v] of Object.entries(headers)) xhr.setRequestHeader(k, v);
+        xhr.upload.onprogress = (e) => { if (e.lengthComputable) barFill.style.width = Math.round((e.loaded / e.total) * 100) + '%'; };
+        xhr.onload = () => (xhr.status >= 200 && xhr.status < 300) ? resolve(xhr.responseText) : reject(new Error(`${xhr.status} ${xhr.responseText}`));
+        xhr.onerror = () => reject(new Error('Network error during upload'));
+        xhr.send(body);
+      });
+    }
+
+    // Build speaker-labeled text from Deepgram's diarized words; fall back to the flat transcript.
+    function renderTranscript(dg) {
+      const alt = dg.results?.channels?.[0]?.alternatives?.[0];
+      if (!alt) return '';
+      const words = alt.words || [];
+      if (!words.length || words[0].speaker === undefined) return (alt.transcript || '').trim();
+      const lines = [];
+      let cur = words[0].speaker, buf = [];
+      for (const w of words) {
+        const spk = w.speaker ?? cur;
+        if (spk !== cur) { lines.push(`[Speaker ${cur}] ${buf.join(' ')}`); cur = spk; buf = []; }
+        buf.push(w.punctuated_word || w.word);
+      }
+      lines.push(`[Speaker ${cur}] ${buf.join(' ')}`);
+      return lines.join('\n');
+    }
+
+    copyBtn.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(resultEl.textContent); setStatus('Copied to clipboard.', 'ok'); }
+      catch (_) { setStatus('Copy failed — select the text manually.', 'error'); }
+    });
+
+    goBtn.addEventListener('click', async () => {
+      const file = $('file').files[0];
+      const secret = secretEl.value.trim();
+      const language = $('language').value;
+      if (!secret) return setStatus('Enter the access secret first.', 'error');
+      if (!file) return setStatus('Choose a file first.', 'error');
+      try { localStorage.setItem('transcribe_secret', secret); } catch (_) {}
+
+      goBtn.disabled = true; copyBtn.style.display = 'none'; resultEl.style.display = 'none';
+      bar.style.display = 'block'; barFill.style.width = '0%';
+      const auth = { Authorization: 'Bearer ' + secret };
+
+      try {
+        setStatus('Getting transcription key…');
+        const tokenRes = await fetch('/api/deepgram-token', { method: 'POST', headers: auth });
+        if (!tokenRes.ok) throw new Error('Key mint failed: ' + tokenRes.status + ' ' + (await tokenRes.text()));
+        const { key } = await tokenRes.json();
+
+        setStatus('Uploading & transcribing… (large files take a while)');
+        const p = new URLSearchParams({ model: 'nova-3', smart_format: 'true', punctuate: 'true', paragraphs: 'true', numerals: 'true', diarize: 'true' });
+        if (language === 'auto') p.set('detect_language', 'true');
+        else p.set('language', language); // en | zh-TW | vi | multi
+        const dgText = await postWithProgress(
+          'https://api.deepgram.com/v1/listen?' + p.toString(),
+          { Authorization: 'Token ' + key, 'Content-Type': deepgramContentType(file) },
+          file
+        );
+        const dg = JSON.parse(dgText);
+        const transcript = renderTranscript(dg);
+        if (!transcript) throw new Error('No speech detected in the file.');
+        const detected = dg.results?.channels?.[0]?.detected_language;
+
+        resultEl.textContent = transcript; resultEl.style.display = 'block'; copyBtn.style.display = 'block';
+
+        setStatus('Saving to project memory…');
+        const saveRes = await fetch('/api/transcribe', {
+          method: 'POST',
+          headers: { ...auth, 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            text: transcript,
+            language: detected || (language === 'auto' ? 'auto' : language),
+            title: $('title').value.trim() || undefined,
+            project: $('project').value.trim() || undefined,
+            milestone: $('milestone').value.trim() || undefined,
+            tags: $('tags').value.trim() || undefined,
+          }),
+        });
+        if (!saveRes.ok) throw new Error('Transcribed OK, but saving failed: ' + saveRes.status + ' ' + (await saveRes.text()));
+        const saved = await saveRes.json();
+        setStatus(`✅ Done. Saved to project memory${saved.noteId ? ' (' + saved.noteId + ')' : ''}${detected ? ' · detected: ' + detected : ''}. Text is above and copyable.`, 'ok');
+      } catch (err) {
+        setStatus((err && err.message) ? err.message : 'Failed', 'error');
+      } finally {
+        bar.style.display = 'none'; goBtn.disabled = false;
+      }
+    });
+  </script>
+</body>
+</html>

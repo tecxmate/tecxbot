@@ -1,8 +1,13 @@
+import { timingSafeEqual } from 'node:crypto';
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
 // Mint a short-lived Deepgram API key so the browser can POST audio
 // directly to Deepgram, bypassing the 4.5MB Vercel Function body limit.
 // The minted key has scope `usage:write` only and expires after 10 minutes.
+//
+// Gated by TRANSCRIBE_SECRET (same secret as /api/transcribe): without it the
+// endpoint fails closed, so it is not an open Deepgram-key vending machine.
+// The caller passes the secret as ?key= or an Authorization: Bearer header.
 
 export const config = { maxDuration: 15 };
 
@@ -26,6 +31,7 @@ async function getProjectId(masterKey: string): Promise<string> {
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+  if (!isAuthorized(req)) return res.status(401).json({ error: 'Unauthorized' });
   const masterKey = process.env.DEEPGRAM_API_KEY;
   if (!masterKey) return res.status(500).json({ error: 'DEEPGRAM_API_KEY not configured' });
 
@@ -44,4 +50,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.error('[deepgram-token]', message);
     return res.status(500).json({ error: message });
   }
+}
+
+function isAuthorized(req: VercelRequest): boolean {
+  const secret = process.env.TRANSCRIBE_SECRET;
+  if (!secret) return false; // fail closed: no secret set means the endpoint is disabled
+  const auth = req.headers.authorization;
+  const key = req.query.key;
+  const fromQuery = Array.isArray(key) ? key[0] : key;
+  const provided = (typeof fromQuery === 'string' && fromQuery.trim())
+    ? fromQuery.trim()
+    : (typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : undefined);
+  if (typeof provided !== 'string') return false;
+  const a = Buffer.from(provided);
+  const b = Buffer.from(secret);
+  return a.length === b.length && timingSafeEqual(new Uint8Array(a), new Uint8Array(b));
 }

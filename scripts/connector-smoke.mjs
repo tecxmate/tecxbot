@@ -42,6 +42,7 @@ const mcpEndpoint = (await import(`${DIST}/api/mcp.js`)).default;
 const metaEndpoint = (await import(`${DIST}/api/facebook-webhook.js`)).default;
 const cronEndpoint = (await import(`${DIST}/api/cron.js`)).default;
 const transcribeEndpoint = (await import(`${DIST}/api/transcribe.js`)).default;
+const deepgramTokenEndpoint = (await import(`${DIST}/api/deepgram-token.js`)).default;
 const { createHmac } = await import('node:crypto');
 
 // ---- harness ----
@@ -1148,6 +1149,77 @@ await test('transcribe rejects an empty body once authorized', async () => {
   assertEqual(r.code, 400, 'empty body rejected before hitting Deepgram');
   delete process.env.TRANSCRIBE_SECRET;
   delete process.env.DEEPGRAM_API_KEY;
+});
+
+await test('transcribe save-only mode files a JSON transcript into project memory', async () => {
+  process.env.TRANSCRIBE_SECRET = 'stt-secret';
+  // No DEEPGRAM_API_KEY needed — the audio never reaches this path.
+  const body = JSON.stringify({ text: 'Meeting notes from the browser upload.', language: 'en', project: 'ogsm', tags: ['meeting', 'client'] });
+  const r = await rawHttpCall(transcribeEndpoint, {
+    method: 'POST',
+    headers: { authorization: 'Bearer stt-secret', 'content-type': 'application/json' },
+    rawBody: body,
+  });
+  assertEqual(r.code, 200, 'saved');
+  assert(typeof r.body.noteId === 'string' && r.body.noteId.length > 0, 'returns a noteId');
+  assertEqual(r.body.text, 'Meeting notes from the browser upload.', 'echoes the text');
+  delete process.env.TRANSCRIBE_SECRET;
+});
+
+await test('transcribe save-only mode rejects a JSON body with no text', async () => {
+  process.env.TRANSCRIBE_SECRET = 'stt-secret';
+  const r = await rawHttpCall(transcribeEndpoint, {
+    method: 'POST',
+    headers: { authorization: 'Bearer stt-secret', 'content-type': 'application/json' },
+    rawBody: JSON.stringify({ project: 'ogsm' }),
+  });
+  assertEqual(r.code, 400, 'missing text rejected');
+  delete process.env.TRANSCRIBE_SECRET;
+});
+
+await test('transcribe save-only mode requires auth like the audio path', async () => {
+  process.env.TRANSCRIBE_SECRET = 'stt-secret';
+  const r = await rawHttpCall(transcribeEndpoint, {
+    method: 'POST',
+    headers: { authorization: 'Bearer wrong', 'content-type': 'application/json' },
+    rawBody: JSON.stringify({ text: 'should not save' }),
+  });
+  assertEqual(r.code, 401, 'wrong secret rejected before saving');
+  delete process.env.TRANSCRIBE_SECRET;
+});
+
+// ---- deepgram-token endpoint (browser-direct upload key mint) ----
+// Gated by TRANSCRIBE_SECRET; the actual mint needs the network, so cover the
+// fail-closed auth boundary and the unconfigured-key path.
+
+console.log('\ndeepgram-token endpoint');
+
+await test('deepgram-token rejects non-POST', async () => {
+  const r = await rawHttpCall(deepgramTokenEndpoint, { method: 'GET' });
+  assertEqual(r.code, 405, 'method not allowed');
+});
+
+await test('deepgram-token fails closed without a secret', async () => {
+  delete process.env.TRANSCRIBE_SECRET;
+  const r = await rawHttpCall(deepgramTokenEndpoint, { method: 'POST', query: { key: 'anything' } });
+  assertEqual(r.code, 401, 'unauthorized when no secret configured');
+});
+
+await test('deepgram-token rejects a wrong key', async () => {
+  process.env.TRANSCRIBE_SECRET = 'stt-secret';
+  const r = await rawHttpCall(deepgramTokenEndpoint, { method: 'POST', headers: { authorization: 'Bearer wrong' } });
+  assertEqual(r.code, 401, 'wrong key rejected');
+  delete process.env.TRANSCRIBE_SECRET;
+});
+
+await test('deepgram-token reports a missing Deepgram key after auth', async () => {
+  process.env.TRANSCRIBE_SECRET = 'stt-secret';
+  const previous = process.env.DEEPGRAM_API_KEY;
+  delete process.env.DEEPGRAM_API_KEY;
+  const r = await rawHttpCall(deepgramTokenEndpoint, { method: 'POST', query: { key: 'stt-secret' } });
+  assertEqual(r.code, 500, 'reports unconfigured Deepgram after passing auth');
+  if (previous !== undefined) process.env.DEEPGRAM_API_KEY = previous;
+  delete process.env.TRANSCRIBE_SECRET;
 });
 
 // ---- result ----
