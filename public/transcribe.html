@@ -4,74 +4,182 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <meta name="robots" content="noindex" />
-  <title>Transcribe · project memory</title>
+  <title>Transcribe · tecxmate</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@1&display=swap" rel="stylesheet">
   <style>
-    :root { color-scheme: light dark; --bg:#0f172a; --card:#1e293b; --ink:#e2e8f0; --muted:#94a3b8; --line:#334155; --field:#0f172a; --accent:#6366f1; --ok:#4ade80; --err:#f87171; }
+    /* Tecxmate design system — Apple-clean, purple used only for brand + primary action. */
+    :root {
+      color-scheme: light;
+      --bg: #fafafa;
+      --ink: #1d1d1f;
+      --muted: #6e6e73;
+      --faint: #86868b;
+      --line: #e5e5e7;
+      --line-med: #d2d2d7;
+      --primary: #8c52ff;
+      --primary-dark: #6b3fcc;
+      --success: #248a3d;
+      --error: #d70015;
+      --radius: 8px;
+    }
     * { box-sizing: border-box; }
-    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; background:var(--bg); color:var(--ink); display:flex; min-height:100vh; align-items:flex-start; justify-content:center; padding:24px; }
-    .card { width:100%; max-width:520px; background:var(--card); border-radius:16px; padding:28px; box-shadow:0 12px 40px rgba(0,0,0,0.4); }
-    h1 { font-size:20px; margin:0 0 4px; }
-    p.sub { margin:0 0 18px; color:var(--muted); font-size:14px; line-height:1.5; }
-    label { display:block; font-size:13px; color:var(--muted); margin:16px 0 6px; }
-    select, input, textarea { width:100%; padding:12px; border-radius:10px; border:1px solid var(--line); background:var(--field); color:var(--ink); font-size:15px; font-family:inherit; }
-    .row { display:flex; gap:12px; }
-    .row > div { flex:1; }
-    button { width:100%; margin-top:22px; padding:14px; border:0; border-radius:10px; background:var(--accent); color:#fff; font-size:16px; font-weight:600; cursor:pointer; }
-    button:disabled { opacity:0.5; cursor:not-allowed; }
-    .hint { font-size:12px; color:var(--muted); margin-top:6px; line-height:1.5; }
-    .status { margin-top:18px; font-size:14px; min-height:20px; }
-    .status.error { color:var(--err); }
-    .status.ok { color:var(--ok); }
-    .bar { margin-top:12px; height:6px; background:var(--line); border-radius:999px; overflow:hidden; display:none; }
-    .bar > div { height:100%; width:0%; background:var(--accent); transition:width 0.2s; }
-    pre { margin-top:16px; padding:12px; background:var(--field); border-radius:10px; max-height:280px; overflow:auto; white-space:pre-wrap; font-size:13px; display:none; }
-    .copy { margin-top:10px; background:transparent; border:1px solid var(--line); color:var(--ink); display:none; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      font-size: 15px;
+      line-height: 1.5;
+      letter-spacing: -0.01em;
+      color: var(--ink);
+      background: var(--bg);
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+      padding: 56px 24px 96px;
+    }
+    .wrap { max-width: 480px; margin: 0 auto; }
+
+    /* Header */
+    .wordmark {
+      font-family: 'Instrument Serif', Georgia, serif;
+      font-style: italic; font-weight: 400;
+      font-size: 30px; line-height: 1;
+      color: var(--primary);
+    }
+    .eyebrow {
+      font-size: 11px; font-weight: 600; letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--faint); margin: 20px 0 8px;
+    }
+    h1 { font-size: 30px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; margin: 0 0 10px; }
+    .lede { color: var(--muted); font-size: 15px; margin: 0 0 8px; }
+
+    /* Form — fields sit on the page, no wrapping boxes */
+    form { margin-top: 36px; }
+    .field { margin-top: 22px; }
+    .field:first-child { margin-top: 0; }
+    label { display: block; font-size: 13px; font-weight: 500; color: var(--ink); margin-bottom: 7px; }
+    input, select {
+      width: 100%; padding: 11px 14px;
+      font-family: inherit; font-size: 15px; color: var(--ink);
+      background: #fff;
+      border: 1px solid var(--line-med);
+      border-radius: var(--radius);
+      transition: border-color 160ms ease, box-shadow 160ms ease;
+    }
+    input::placeholder { color: var(--faint); }
+    input:focus, select:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(140, 82, 255, 0.15);
+    }
+    input[type=file] { padding: 9px 12px; cursor: pointer; }
+    input[type=file]::file-selector-button {
+      font-family: inherit; font-size: 13px; font-weight: 500;
+      color: var(--primary); background: rgba(140, 82, 255, 0.1);
+      border: 0; border-radius: 6px; padding: 7px 12px; margin-right: 12px; cursor: pointer;
+    }
+    .hint { font-size: 12px; color: var(--muted); margin-top: 7px; line-height: 1.5; }
+    .two { display: flex; gap: 14px; }
+    .two > .field { flex: 1; margin-top: 22px; }
+
+    /* Primary action — the one place purple fills a surface */
+    .go {
+      width: 100%; margin-top: 32px; padding: 15px;
+      font-family: inherit; font-size: 16px; font-weight: 600;
+      color: #fff; background: var(--primary);
+      border: 0; border-radius: 999px; cursor: pointer;
+      box-shadow: 0 10px 30px rgba(140, 82, 255, 0.28);
+      transition: background 160ms ease, box-shadow 160ms ease;
+    }
+    .go:hover { background: var(--primary-dark); box-shadow: 0 14px 40px rgba(140, 82, 255, 0.38); }
+    .go:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
+
+    /* Progress + status */
+    .bar { margin-top: 16px; height: 4px; background: var(--line); border-radius: 999px; overflow: hidden; display: none; }
+    .bar > div { height: 100%; width: 0%; background: var(--primary); transition: width 0.2s ease; }
+    .status { margin-top: 16px; font-size: 14px; min-height: 20px; color: var(--muted); }
+    .status.ok { color: var(--success); }
+    .status.error { color: var(--error); }
+
+    /* Transcript output — the only content surface */
+    pre {
+      margin-top: 20px; padding: 18px 20px;
+      background: #fff; border: 1px solid var(--line); border-radius: var(--radius);
+      max-height: 320px; overflow: auto;
+      white-space: pre-wrap; word-wrap: break-word;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+      font-size: 14px; line-height: 1.65; color: var(--ink);
+      display: none;
+    }
+    .copy {
+      display: none; margin-top: 12px; padding: 9px 16px;
+      font-family: inherit; font-size: 13px; font-weight: 500;
+      color: var(--ink); background: #fff;
+      border: 1px solid var(--line-med); border-radius: var(--radius); cursor: pointer;
+      transition: border-color 160ms ease;
+    }
+    .copy:hover { border-color: var(--faint); }
   </style>
 </head>
 <body>
-  <div class="card">
-    <h1>🎙️ Audio → Text → Project memory</h1>
-    <p class="sub">Upload a recording of any length. It transcribes straight through Deepgram (no size limit) and files the text into project memory. No LINE involved.</p>
+  <div class="wrap">
+    <div class="wordmark">tecxmate</div>
+    <div class="eyebrow">Speech → text</div>
+    <h1>Transcribe a recording.</h1>
+    <p class="lede">Upload audio of any length. It transcribes through Deepgram — no size limit — and files the text into project memory, ready for Claude.</p>
 
-    <label for="secret">Access secret (TRANSCRIBE_SECRET)</label>
-    <input type="password" id="secret" placeholder="paste once — remembered on this device" autocomplete="off" />
-    <div class="hint">Stored only in this browser (localStorage). Same secret the phone shortcut uses.</div>
-
-    <label for="language">Spoken language</label>
-    <select id="language">
-      <option value="auto">Auto-detect (single language)</option>
-      <option value="en">English</option>
-      <option value="zh-TW">中文 (Traditional / zh-TW)</option>
-      <option value="vi">Tiếng Việt</option>
-      <option value="multi">Mixed — EN + European (code-switching)</option>
-    </select>
-    <div class="hint">Deepgram code-switches only across EN + 9 European/Indic/JP languages. For a recording mixing EN + 中文 or + Việt, pick the <em>dominant</em> language — no model transcribes all three together.</div>
-
-    <div class="row">
-      <div>
-        <label for="project">Project (optional)</label>
-        <input type="text" id="project" placeholder="e.g. ogsmbooster" />
+    <form onsubmit="return false;">
+      <div class="field">
+        <label for="secret">Access secret</label>
+        <input type="password" id="secret" placeholder="paste once — remembered on this device" autocomplete="off" />
+        <div class="hint">Stored only in this browser. The same secret the phone shortcut uses.</div>
       </div>
-      <div>
-        <label for="milestone">Milestone (optional)</label>
-        <input type="text" id="milestone" placeholder="e.g. 2026-Q3" />
+
+      <div class="field">
+        <label for="language">Spoken language</label>
+        <select id="language">
+          <option value="auto">Auto-detect (single language)</option>
+          <option value="en">English</option>
+          <option value="zh-TW">中文 (Traditional · zh-TW)</option>
+          <option value="vi">Tiếng Việt</option>
+          <option value="multi">Mixed — EN + European (code-switching)</option>
+        </select>
+        <div class="hint">Code-switching works only across EN + 9 European/Indic/JP languages. For a recording mixing EN + 中文 or + Việt, pick the <em>dominant</em> language — no model handles all three at once.</div>
       </div>
-    </div>
 
-    <label for="title">Title (optional)</label>
-    <input type="text" id="title" placeholder="defaults to a timestamp" />
+      <div class="two">
+        <div class="field">
+          <label for="project">Project</label>
+          <input type="text" id="project" placeholder="e.g. ogsmbooster" />
+        </div>
+        <div class="field">
+          <label for="milestone">Milestone</label>
+          <input type="text" id="milestone" placeholder="e.g. 2026-Q3" />
+        </div>
+      </div>
 
-    <label for="tags">Tags (optional, comma-separated)</label>
-    <input type="text" id="tags" placeholder="e.g. meeting, client" />
+      <div class="field">
+        <label for="title">Title</label>
+        <input type="text" id="title" placeholder="optional — defaults to a timestamp" />
+      </div>
 
-    <label for="file">Audio or video file</label>
-    <!-- No accept filter: iOS Safari's document picker hides valid audio (m4a,
-         caf, exported voice memos) behind accept="audio/*". Allow any file so it
-         is always selectable; a non-media file is caught below and by Deepgram. -->
-    <input type="file" id="file" />
-    <div class="hint">Pick an audio or video file (m4a, mp3, wav, mp4…). On iPhone, tap <b>Browse</b> / <b>Search</b> in the picker — the Recents tab is often empty.</div>
+      <div class="field">
+        <label for="tags">Tags</label>
+        <input type="text" id="tags" placeholder="optional, comma-separated — e.g. meeting, client" />
+      </div>
 
-    <button id="go">Transcribe &amp; save</button>
+      <div class="field">
+        <label for="file">Audio or video file</label>
+        <!-- No accept filter: iOS Safari's document picker hides valid audio (m4a,
+             caf, exported voice memos) behind accept="audio/*". Allow any file so it
+             is always selectable; a non-media file is caught below and by Deepgram. -->
+        <input type="file" id="file" />
+        <div class="hint">m4a, mp3, wav, mp4… On iPhone, tap <b>Browse</b> / <b>Search</b> in the picker — the Recents tab is often empty.</div>
+      </div>
+
+      <button class="go" id="go">Transcribe &amp; save</button>
+    </form>
+
     <div class="bar" id="bar"><div></div></div>
     <div class="status" id="status"></div>
     <pre id="result"></pre>
