@@ -224,11 +224,16 @@ await test('notifications get no response', async () => {
   assertEqual(await handleMcpMessage({ jsonrpc: '2.0', method: 'notifications/initialized' }), undefined, 'response');
 });
 
-await test('tools/list advertises seven read-only tools', async () => {
+await test('tools/list advertises the read tools plus project-memory tools', async () => {
   const { tools } = await rpc('tools/list');
-  assertEqual(tools.length, 7, 'tool count');
+  // 7 read tools + 5 note tools (send_line_reply is hidden while replies are off).
+  assertEqual(tools.length, 12, 'tool count');
   assert(tools.some((tool) => tool.name === 'get_image'), 'get_image is advertised');
-  assert(tools.every((tool) => tool.annotations.readOnlyHint), 'every tool is annotated read-only');
+  assert(tools.some((tool) => tool.name === 'save_note'), 'save_note is advertised');
+  const readTool = tools.find((tool) => tool.name === 'get_conversation');
+  assertEqual(readTool.annotations.readOnlyHint, true, 'read tools are read-only');
+  const writeTool = tools.find((tool) => tool.name === 'save_note');
+  assertEqual(writeTool.annotations.readOnlyHint, false, 'save_note is a write tool');
   assert(tools.every((tool) => tool.inputSchema.type === 'object'), 'every tool has an object schema');
 });
 
@@ -341,7 +346,7 @@ await test('a wrong token is rejected', async () => {
 await test('a bearer header authenticates', async () => {
   const response = await httpCall({ headers: AUTH, body: jsonRpc('tools/list') });
   assertEqual(response.code, 200, 'status');
-  assertEqual(response.body.result.tools.length, 7, 'tool count');
+  assertEqual(response.body.result.tools.length, 12, 'tool count');
 });
 
 await test('a query-param key authenticates, for clients that only take a URL', async () => {
@@ -1038,6 +1043,68 @@ await test('parseZip guards against a decompression bomb (per-entry cap)', () =>
   let threw = false;
   try { parseZip(zip, { maxEntryBytes: 100, maxTotalBytes: 100 }); } catch { threw = true; }
   assert(threw, 'refuses to expand past the cap');
+});
+
+// ---- project memory (notes) ----
+// Durable, taggable notes/transcripts, platform-agnostic. Runs on the in-memory
+// store here (no DB), which is enough to exercise the tools end to end.
+
+console.log('\nproject memory');
+
+let savedNoteId;
+
+await test('save_note stores a transcript with metadata', async () => {
+  const result = await callTool('save_note', {
+    title: 'ogsmbooster kickoff call',
+    body: 'Richard wants redemption-code top-ups: 600 codes, 200 points each, before next Sunday.',
+    project: 'ogsmbooster',
+    milestone: 'billing',
+    participants: ['Richard', 'Brian'],
+    tags: ['woocommerce', 'priority-1'],
+  });
+  assertEqual(result.structuredContent.saved, true, 'saved');
+  savedNoteId = result.structuredContent.id;
+  assert(savedNoteId && savedNoteId.startsWith('note_'), 'returns a note id');
+});
+
+await test('get_note reads it back in full with tags', async () => {
+  const result = await callTool('get_note', { note_id: savedNoteId });
+  assertEqual(result.structuredContent.found, true, 'found');
+  assertEqual(result.structuredContent.project, 'ogsmbooster', 'project');
+  assertIncludes(result.content[0].text, 'redemption-code', 'body present');
+  assertIncludes(result.content[0].text, 'priority-1', 'tags shown');
+});
+
+await test('list_notes filters by project and by tag', async () => {
+  await callTool('save_note', { title: 'unrelated note', body: 'nothing here', project: 'other-project' });
+  const byProject = await callTool('list_notes', { project: 'ogsmbooster' });
+  assertEqual(byProject.structuredContent.notes.length, 1, 'one note in ogsmbooster');
+  const byTag = await callTool('list_notes', { tag: 'priority-1' });
+  assert(byTag.structuredContent.notes.some((n) => n.id === savedNoteId), 'found by tag');
+  const byOther = await callTool('list_notes', { tag: 'no-such-tag' });
+  assertEqual(byOther.structuredContent.notes.length, 0, 'no match for a missing tag');
+});
+
+await test('update_note appends tags and sets a milestone', async () => {
+  const result = await callTool('update_note', { note_id: savedNoteId, add_tags: ['deadline'], milestone: 'billing-v1' });
+  assertEqual(result.structuredContent.updated, true, 'updated');
+  assert(result.structuredContent.tags.includes('deadline') && result.structuredContent.tags.includes('priority-1'), 'tag appended, existing kept');
+  assertEqual(result.structuredContent.milestone, 'billing-v1', 'milestone set');
+});
+
+await test('search_notes finds by body text', async () => {
+  const result = await callTool('search_notes', { query: 'redemption-code' });
+  assert(result.structuredContent.notes.some((n) => n.id === savedNoteId), 'found by body search');
+  const none = await callTool('search_notes', { query: 'zzz-not-present' });
+  assertEqual(none.structuredContent.notes.length, 0, 'no false matches');
+});
+
+await test('save_note and update_note are advertised as write tools', async () => {
+  const tools = (await rpc('tools/list')).tools;
+  const save = tools.find((t) => t.name === 'save_note');
+  const list = tools.find((t) => t.name === 'list_notes');
+  assertEqual(save.annotations.readOnlyHint, false, 'save_note is a write tool');
+  assertEqual(list.annotations.readOnlyHint, true, 'list_notes is read-only');
 });
 
 // ---- result ----

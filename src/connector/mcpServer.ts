@@ -35,6 +35,8 @@ function buildInstructions(): string {
     'Call latest_context at the start of a session, or whenever the user refers to "my clients", "the latest chat", or what someone said — it returns the most recently active conversations with their recent messages.',
     'Then use get_conversation for a full transcript, search_messages to find a phrase, and list_conversations to browse.',
     '',
+    'It also holds durable project memory — notes and transcripts, independent of any chat platform. save_note files a transcript or decision; update_note tags it with project, milestone, participants, tags, and when it occurred; list_notes / search_notes / get_note read it back. Keep the memory organized: when you file or are handed a transcript, tag it with the project and milestone it belongs to so the whole project stays coherent across sessions and clients.',
+    '',
   ];
   // The PM draft-in-chat role is the same whether or not the send tool exists —
   // reading + drafting uses only read tools. send_line_reply is an add-on for the
