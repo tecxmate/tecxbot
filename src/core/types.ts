@@ -79,7 +79,6 @@ export type TenantPlan = {
   id: string;
   name: string;
   characterLimit: number;
-  stripePriceId?: string;
 };
 
 export type ReplyButton = {

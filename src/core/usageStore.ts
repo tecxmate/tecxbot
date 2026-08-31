@@ -6,8 +6,6 @@ export type UsageAccount = {
   periodStartedAt: number;
   periodEndsAt?: number;
   usedCharacters: number;
-  stripeCustomerId?: string;
-  stripeSubscriptionId?: string;
 };
 
 const usageAccounts = new Map<string, UsageAccount>();
@@ -37,15 +35,5 @@ export function canConsumeCharacters(tenantId: string, defaultPlan: TenantPlan, 
 export function consumeCharacters(tenantId: string, defaultPlan: TenantPlan, characters: number) {
   const account = getUsageAccount(tenantId, defaultPlan);
   account.usedCharacters += Math.max(0, characters);
-  return account;
-}
-
-export function activatePaidPlan(input: { tenantId: string; plan: TenantPlan; stripeCustomerId?: string; stripeSubscriptionId?: string }) {
-  const account = getUsageAccount(input.tenantId, input.plan);
-  account.plan = input.plan;
-  account.usedCharacters = 0;
-  account.periodStartedAt = Date.now();
-  account.stripeCustomerId = input.stripeCustomerId ?? account.stripeCustomerId;
-  account.stripeSubscriptionId = input.stripeSubscriptionId ?? account.stripeSubscriptionId;
   return account;
 }
