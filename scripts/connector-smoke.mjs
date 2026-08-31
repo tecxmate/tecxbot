@@ -41,6 +41,7 @@ const { parseSince } = await import(`${DIST}/src/connector/tools.js`);
 const mcpEndpoint = (await import(`${DIST}/api/mcp.js`)).default;
 const metaEndpoint = (await import(`${DIST}/api/facebook-webhook.js`)).default;
 const cronEndpoint = (await import(`${DIST}/api/cron.js`)).default;
+const transcribeEndpoint = (await import(`${DIST}/api/transcribe.js`)).default;
 const { createHmac } = await import('node:crypto');
 
 // ---- harness ----
@@ -1105,6 +1106,48 @@ await test('save_note and update_note are advertised as write tools', async () =
   const list = tools.find((t) => t.name === 'list_notes');
   assertEqual(save.annotations.readOnlyHint, false, 'save_note is a write tool');
   assertEqual(list.annotations.readOnlyHint, true, 'list_notes is read-only');
+});
+
+// ---- transcribe endpoint (speech-to-text ingest) ----
+// The Deepgram call needs the network, so these cover the auth gating and input
+// validation up to that boundary (fail-closed like the other secret endpoints).
+
+console.log('\ntranscribe endpoint');
+
+await test('transcribe rejects non-POST', async () => {
+  const r = await rawHttpCall(transcribeEndpoint, { method: 'GET' });
+  assertEqual(r.code, 405, 'method not allowed');
+});
+
+await test('transcribe fails closed without a secret', async () => {
+  delete process.env.TRANSCRIBE_SECRET;
+  const r = await rawHttpCall(transcribeEndpoint, { method: 'POST', query: { key: 'anything' }, rawBody: 'x' });
+  assertEqual(r.code, 401, 'unauthorized when no secret configured');
+});
+
+await test('transcribe rejects a wrong key', async () => {
+  process.env.TRANSCRIBE_SECRET = 'stt-secret';
+  const r = await rawHttpCall(transcribeEndpoint, { method: 'POST', query: { key: 'wrong' }, rawBody: 'x' });
+  assertEqual(r.code, 401, 'wrong key rejected');
+  delete process.env.TRANSCRIBE_SECRET;
+});
+
+await test('transcribe reports a missing Deepgram key after auth', async () => {
+  process.env.TRANSCRIBE_SECRET = 'stt-secret';
+  const previous = process.env.DEEPGRAM_API_KEY;
+  delete process.env.DEEPGRAM_API_KEY;
+  const r = await rawHttpCall(transcribeEndpoint, { method: 'POST', query: { key: 'stt-secret' }, rawBody: 'audio' });
+  assertEqual(r.code, 500, 'reports unconfigured Deepgram');
+  if (previous !== undefined) process.env.DEEPGRAM_API_KEY = previous;
+});
+
+await test('transcribe rejects an empty body once authorized', async () => {
+  process.env.TRANSCRIBE_SECRET = 'stt-secret';
+  process.env.DEEPGRAM_API_KEY = 'dummy';
+  const r = await rawHttpCall(transcribeEndpoint, { method: 'POST', query: { key: 'stt-secret' }, rawBody: '' });
+  assertEqual(r.code, 400, 'empty body rejected before hitting Deepgram');
+  delete process.env.TRANSCRIBE_SECRET;
+  delete process.env.DEEPGRAM_API_KEY;
 });
 
 // ---- result ----

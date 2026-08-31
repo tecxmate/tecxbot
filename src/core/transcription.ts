@@ -2,8 +2,11 @@ import type { TenantConfig, TranscriptLanguage } from './types.js';
 
 export type DeepgramTranscription = { transcript: string; speakers: number[] };
 
-export async function transcribeWithDeepgram(input: { apiKey: string; audio: ArrayBuffer; contentType: string; language: TranscriptLanguage }): Promise<DeepgramTranscription> {
-  const params = new URLSearchParams({ model: 'nova-3', language: input.language, punctuate: 'true', smart_format: 'true', diarize: 'true', paragraphs: 'true', utterances: 'true', numerals: 'true' });
+export async function transcribeWithDeepgram(input: { apiKey: string; audio: ArrayBuffer; contentType: string; language: TranscriptLanguage | 'auto' }): Promise<DeepgramTranscription> {
+  const base = { model: 'nova-3', punctuate: 'true', smart_format: 'true', diarize: 'true', paragraphs: 'true', utterances: 'true', numerals: 'true' };
+  // 'auto' lets Deepgram detect the language (a recording may be English or
+  // Chinese); a fixed language is more accurate when you know it.
+  const params = new URLSearchParams(input.language === 'auto' ? { ...base, detect_language: 'true' } : { ...base, language: input.language });
   const response = await fetch(`https://api.deepgram.com/v1/listen?${params}`, { method: 'POST', headers: { Authorization: `Token ${input.apiKey}`, 'Content-Type': input.contentType }, body: input.audio });
   if (!response.ok) throw new Error(`Deepgram failed: ${response.status} ${await response.text()}`);
   const data = await response.json() as { results?: { channels?: Array<{ alternatives?: Array<{ transcript?: string; words?: Array<{ word: string; speaker?: number }> }> }> } };
