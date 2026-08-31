@@ -65,7 +65,11 @@
     <input type="text" id="tags" placeholder="e.g. meeting, client" />
 
     <label for="file">Audio or video file</label>
-    <input type="file" id="file" accept="audio/*,video/*" />
+    <!-- No accept filter: iOS Safari's document picker hides valid audio (m4a,
+         caf, exported voice memos) behind accept="audio/*". Allow any file so it
+         is always selectable; a non-media file is caught below and by Deepgram. -->
+    <input type="file" id="file" />
+    <div class="hint">Pick an audio or video file (m4a, mp3, wav, mp4…). On iPhone, tap <b>Browse</b> / <b>Search</b> in the picker — the Recents tab is often empty.</div>
 
     <button id="go">Transcribe &amp; save</button>
     <div class="bar" id="bar"><div></div></div>
@@ -83,6 +87,13 @@
     secretEl.addEventListener('change', () => { try { localStorage.setItem('transcribe_secret', secretEl.value.trim()); } catch (_) {} });
 
     function setStatus(msg, kind) { statusEl.textContent = msg; statusEl.className = 'status' + (kind ? ' ' + kind : ''); }
+
+    const MEDIA_EXT = /\.(m4a|mp3|wav|aac|caf|mp4|m4v|mov|webm|ogg|opus|flac|aiff?|amr|3gp|wma|mkv|mpga|mpeg)$/i;
+    function looksLikeMedia(file) {
+      const t = (file.type || '').toLowerCase();
+      if (t.startsWith('audio/') || t.startsWith('video/')) return true;
+      return MEDIA_EXT.test(file.name || '');
+    }
 
     function deepgramContentType(file) {
       const t = (file.type || '').toLowerCase();
@@ -137,6 +148,7 @@
       const language = $('language').value;
       if (!secret) return setStatus('Enter the access secret first.', 'error');
       if (!file) return setStatus('Choose a file first.', 'error');
+      if (!looksLikeMedia(file)) return setStatus(`"${file.name}" is not an audio or video file. Pick a recording (m4a, mp3, wav, mp4…).`, 'error');
       try { localStorage.setItem('transcribe_secret', secret); } catch (_) {}
 
       goBtn.disabled = true; copyBtn.style.display = 'none'; resultEl.style.display = 'none';
