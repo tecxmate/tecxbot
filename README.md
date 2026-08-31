@@ -12,7 +12,6 @@ The goal is to combine deterministic workflows with LLM interpretation:
 - Tenant configuration controls prompts, vocabulary, workflows, and enabled tools.
 - Group translation settings define target languages per LINE group.
 - Usage accounting caps translation characters by tenant plan.
-- Stripe-compatible checkout/webhook endpoints provide a payment template.
 - Audio workflows support transcript generation and optional polishing.
 
 Current scope:
@@ -28,8 +27,6 @@ Current scope:
 - LINE group translation commands
 - Multi-language translation using OpenAI
 - Per-tenant character usage cap
-- Stripe Checkout session endpoint
-- Stripe webhook endpoint for paid plan activation
 - Group mention gating
 - Short-lived session context
 - Audio confirmation and language selection
@@ -289,13 +286,8 @@ Other commands:
 /languages
 ```
 
-## Payment template
+## Usage caps
 
 The free plan defaults to 5,000 billable characters. Billable characters are counted as message characters multiplied by configured target language count.
 
-Stripe endpoints:
-
-- `POST /api/create-checkout-session`
-- `POST /api/stripe-webhook`
-
-The current store is intentionally in memory. Before real customers, replace `src/core/usageStore.ts` and `src/core/groupTranslationStore.ts` with durable storage such as Postgres plus Redis.
+The current store is intentionally in memory. Before real customers, replace `src/core/usageStore.ts` and `src/core/groupTranslationStore.ts` with durable storage such as Postgres plus Redis, and re-add a billing provider (Stripe Checkout/webhook endpoints previously lived at `api/create-checkout-session.ts` and `api/stripe-webhook.ts` — recoverable from git history) to upgrade a tenant past the free cap.

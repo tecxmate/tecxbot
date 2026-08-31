@@ -9,7 +9,6 @@ Tecxbot is now shaped as a LINE group translation product template:
 - Group admins configure translation languages with `/set`.
 - Group members can opt their own messages in or out with `/on` / `/off`.
 - Translation usage is counted against a tenant character cap.
-- Stripe Checkout can upgrade a tenant to a paid cap.
 
 This should not copy another translator's brand, visual assets, or wording. The implementation can share familiar interaction patterns because those are product-category conventions.
 
@@ -65,7 +64,7 @@ Each business user should configure business profile, language policy, enabled c
 
 7. Usage and billing
 
-Counts billable translation characters per tenant. The template includes Stripe Checkout and webhook endpoints, but real production billing should persist subscription state, payment provider ids, billing period boundaries, and usage events.
+Counts billable translation characters per tenant. A billing provider is no longer wired in (the former Stripe Checkout/webhook endpoints were removed and are recoverable from git history); real production billing should persist subscription state, payment provider ids, billing period boundaries, and usage events.
 
 ## Initial Production Data Model
 
