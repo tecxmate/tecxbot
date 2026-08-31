@@ -58,7 +58,7 @@
     .field { margin-top: 22px; }
     .field:first-child { margin-top: 0; }
     label { display: block; font-size: 13px; font-weight: 500; color: var(--ink); margin-bottom: 7px; }
-    input, select {
+    input, select, textarea {
       width: 100%; padding: 11px 14px;
       font-family: inherit; font-size: 15px; color: var(--ink);
       background: #fff;
@@ -66,8 +66,9 @@
       border-radius: var(--radius);
       transition: border-color 160ms ease, box-shadow 160ms ease;
     }
-    input::placeholder { color: var(--faint); }
-    input:focus, select:focus {
+    textarea { min-height: 62px; resize: vertical; line-height: 1.5; }
+    input::placeholder, textarea::placeholder { color: var(--faint); }
+    input:focus, select:focus, textarea:focus {
       outline: none;
       border-color: var(--primary);
       box-shadow: 0 0 0 3px rgba(140, 82, 255, 0.15);
@@ -82,9 +83,34 @@
     .two { display: flex; gap: 14px; }
     .two > .field { flex: 1; margin-top: 22px; }
 
+    /* Presets bar */
+    .presets { display: flex; gap: 8px; align-items: center; }
+    .presets select { flex: 1; }
+    .mini {
+      font-family: inherit; font-size: 13px; font-weight: 500;
+      color: var(--ink); background: #fff; white-space: nowrap;
+      border: 1px solid var(--line-med); border-radius: var(--radius);
+      padding: 11px 14px; cursor: pointer; transition: border-color 160ms ease;
+    }
+    .mini:hover { border-color: var(--faint); }
+
+    /* Advanced disclosure — no box, just a toggle + tidy checkbox grid */
+    details.adv { margin-top: 22px; }
+    details.adv > summary {
+      list-style: none; cursor: pointer;
+      font-size: 13px; font-weight: 500; color: var(--primary);
+      display: inline-flex; align-items: center; gap: 6px;
+    }
+    details.adv > summary::-webkit-details-marker { display: none; }
+    details.adv > summary::before { content: '▸'; font-size: 11px; transition: transform 160ms ease; }
+    details.adv[open] > summary::before { transform: rotate(90deg); }
+    .toggles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 20px; margin-top: 14px; }
+    .toggle { display: flex; align-items: center; gap: 9px; font-size: 14px; color: var(--ink); cursor: pointer; }
+    .toggle input { width: 17px; height: 17px; padding: 0; margin: 0; accent-color: var(--primary); cursor: pointer; flex: none; }
+
     /* Primary action — the one place purple fills a surface */
     .go {
-      width: 100%; margin-top: 32px; padding: 15px;
+      width: 100%; margin-top: 30px; padding: 15px;
       font-family: inherit; font-size: 16px; font-weight: 600;
       color: #fff; background: var(--primary);
       border: 0; border-radius: 999px; cursor: pointer;
@@ -130,6 +156,16 @@
 
     <form onsubmit="return false;">
       <div class="field">
+        <label for="preset">Preset</label>
+        <div class="presets">
+          <select id="preset"><option value="">— last used —</option></select>
+          <button type="button" class="mini" id="preset-save">Save…</button>
+          <button type="button" class="mini" id="preset-delete">Delete</button>
+        </div>
+        <div class="hint">A preset stores the language, keywords, and options below. Saved in this browser.</div>
+      </div>
+
+      <div class="field">
         <label for="secret">Access secret</label>
         <input type="password" id="secret" placeholder="paste once — remembered on this device" autocomplete="off" />
         <div class="hint">Stored only in this browser. The same secret the phone shortcut uses.</div>
@@ -145,6 +181,12 @@
           <option value="multi">Mixed — EN + European (code-switching)</option>
         </select>
         <div class="hint">Code-switching works only across EN + 9 European/Indic/JP languages. For a recording mixing EN + 中文 or + Việt, pick the <em>dominant</em> language — no model handles all three at once.</div>
+      </div>
+
+      <div class="field">
+        <label for="keyterms">Keywords to keep</label>
+        <textarea id="keyterms" placeholder="OGSM, TECXMATE, Richard, Brian, 拓凱…  (one per line or comma-separated)"></textarea>
+        <div class="hint">Proper nouns, brand names, and jargon to lock in (Deepgram <b>keyterm</b> prompting, nova-3 — up to ~100 words, works across languages). Boosts names that ASR usually mangles.</div>
       </div>
 
       <div class="two">
@@ -168,6 +210,18 @@
         <input type="text" id="tags" placeholder="optional, comma-separated — e.g. meeting, client" />
       </div>
 
+      <details class="adv">
+        <summary>Advanced options</summary>
+        <div class="toggles">
+          <label class="toggle"><input type="checkbox" id="t-diarize" checked /> Speaker labels</label>
+          <label class="toggle"><input type="checkbox" id="t-punctuate" checked /> Punctuation</label>
+          <label class="toggle"><input type="checkbox" id="t-smart_format" checked /> Smart format</label>
+          <label class="toggle"><input type="checkbox" id="t-numerals" checked /> Numerals</label>
+          <label class="toggle"><input type="checkbox" id="t-paragraphs" checked /> Paragraphs</label>
+          <label class="toggle"><input type="checkbox" id="t-utterances" /> Utterances</label>
+        </div>
+      </details>
+
       <div class="field">
         <label for="file">Audio or video file</label>
         <!-- No accept filter: iOS Safari's document picker hides valid audio (m4a,
@@ -189,12 +243,68 @@
   <script>
     const $ = (id) => document.getElementById(id);
     const statusEl = $('status'), resultEl = $('result'), bar = $('bar'), barFill = bar.querySelector('div'), goBtn = $('go'), copyBtn = $('copy'), secretEl = $('secret');
-
-    // Remember the secret on this device only.
-    try { const saved = localStorage.getItem('transcribe_secret'); if (saved) secretEl.value = saved; } catch (_) {}
-    secretEl.addEventListener('change', () => { try { localStorage.setItem('transcribe_secret', secretEl.value.trim()); } catch (_) {} });
+    const TOGGLES = ['diarize', 'punctuate', 'smart_format', 'numerals', 'paragraphs', 'utterances'];
 
     function setStatus(msg, kind) { statusEl.textContent = msg; statusEl.className = 'status' + (kind ? ' ' + kind : ''); }
+
+    // ---- config (language + keyterms + toggles) persistence ----
+    function parseKeyterms(raw) {
+      return [...new Set((raw || '').split(/[\n,]/).map((s) => s.trim()).filter(Boolean))];
+    }
+    function readConfig() {
+      const cfg = { language: $('language').value, keyterms: parseKeyterms($('keyterms').value), options: {} };
+      for (const t of TOGGLES) cfg.options[t] = $('t-' + t).checked;
+      return cfg;
+    }
+    function applyConfig(cfg) {
+      if (!cfg) return;
+      if (cfg.language) $('language').value = cfg.language;
+      if (Array.isArray(cfg.keyterms)) $('keyterms').value = cfg.keyterms.join('\n');
+      if (cfg.options) for (const t of TOGGLES) if (typeof cfg.options[t] === 'boolean') $('t-' + t).checked = cfg.options[t];
+    }
+    function saveLast() { try { localStorage.setItem('transcribe_config', JSON.stringify(readConfig())); } catch (_) {} }
+
+    // ---- presets (named config bundles) ----
+    function loadPresets() { try { return JSON.parse(localStorage.getItem('transcribe_presets') || '{}'); } catch (_) { return {}; } }
+    function savePresets(p) { try { localStorage.setItem('transcribe_presets', JSON.stringify(p)); } catch (_) {} }
+    function refreshPresetSelect(selected) {
+      const presets = loadPresets();
+      const sel = $('preset');
+      sel.innerHTML = '<option value="">— last used —</option>';
+      for (const name of Object.keys(presets).sort()) {
+        const o = document.createElement('option');
+        o.value = name; o.textContent = name; if (name === selected) o.selected = true;
+        sel.appendChild(o);
+      }
+    }
+    $('preset').addEventListener('change', () => {
+      const presets = loadPresets();
+      const name = $('preset').value;
+      if (name && presets[name]) { applyConfig(presets[name]); saveLast(); }
+    });
+    $('preset-save').addEventListener('click', () => {
+      const name = (prompt('Save current settings as preset:') || '').trim();
+      if (!name) return;
+      const presets = loadPresets();
+      presets[name] = readConfig();
+      savePresets(presets); refreshPresetSelect(name);
+      setStatus('Preset "' + name + '" saved.', 'ok');
+    });
+    $('preset-delete').addEventListener('click', () => {
+      const name = $('preset').value;
+      if (!name) return setStatus('Pick a saved preset to delete.', 'error');
+      const presets = loadPresets(); delete presets[name];
+      savePresets(presets); refreshPresetSelect('');
+      setStatus('Preset "' + name + '" deleted.', 'ok');
+    });
+
+    // Remember the secret + config on this device.
+    try { const s = localStorage.getItem('transcribe_secret'); if (s) secretEl.value = s; } catch (_) {}
+    secretEl.addEventListener('change', () => { try { localStorage.setItem('transcribe_secret', secretEl.value.trim()); } catch (_) {} });
+    try { applyConfig(JSON.parse(localStorage.getItem('transcribe_config') || 'null')); } catch (_) {}
+    refreshPresetSelect('');
+    for (const el of [$('language'), $('keyterms'), ...TOGGLES.map((t) => $('t-' + t))]) el.addEventListener('change', saveLast);
+    $('keyterms').addEventListener('input', saveLast);
 
     const MEDIA_EXT = /\.(m4a|mp3|wav|aac|caf|mp4|m4v|mov|webm|ogg|opus|flac|aiff?|amr|3gp|wma|mkv|mpga|mpeg)$/i;
     function looksLikeMedia(file) {
@@ -213,6 +323,16 @@
       if (name.endsWith('.webm')) return 'audio/webm';
       if (name.endsWith('.ogg') || name.endsWith('.opus')) return 'audio/ogg';
       return 'application/octet-stream';
+    }
+
+    // Build the Deepgram query from the current config.
+    function buildDeepgramParams(cfg) {
+      const p = new URLSearchParams({ model: 'nova-3' });
+      for (const t of TOGGLES) if (cfg.options[t]) p.set(t, 'true');
+      if (cfg.language === 'auto') p.set('detect_language', 'true');
+      else p.set('language', cfg.language); // en | zh-TW | vi | multi
+      for (const term of cfg.keyterms) p.append('keyterm', term); // nova-3 keyterm prompting
+      return p;
     }
 
     // Upload with a progress bar so a large file visibly moves.
@@ -253,11 +373,12 @@
     goBtn.addEventListener('click', async () => {
       const file = $('file').files[0];
       const secret = secretEl.value.trim();
-      const language = $('language').value;
+      const cfg = readConfig();
       if (!secret) return setStatus('Enter the access secret first.', 'error');
       if (!file) return setStatus('Choose a file first.', 'error');
       if (!looksLikeMedia(file)) return setStatus(`"${file.name}" is not an audio or video file. Pick a recording (m4a, mp3, wav, mp4…).`, 'error');
       try { localStorage.setItem('transcribe_secret', secret); } catch (_) {}
+      saveLast();
 
       goBtn.disabled = true; copyBtn.style.display = 'none'; resultEl.style.display = 'none';
       bar.style.display = 'block'; barFill.style.width = '0%';
@@ -270,11 +391,8 @@
         const { token, scheme } = await tokenRes.json();
 
         setStatus('Uploading & transcribing… (large files take a while)');
-        const p = new URLSearchParams({ model: 'nova-3', smart_format: 'true', punctuate: 'true', paragraphs: 'true', numerals: 'true', diarize: 'true' });
-        if (language === 'auto') p.set('detect_language', 'true');
-        else p.set('language', language); // en | zh-TW | vi | multi
         const dgText = await postWithProgress(
-          'https://api.deepgram.com/v1/listen?' + p.toString(),
+          'https://api.deepgram.com/v1/listen?' + buildDeepgramParams(cfg).toString(),
           { Authorization: (scheme || 'Bearer') + ' ' + token, 'Content-Type': deepgramContentType(file) },
           file
         );
@@ -291,7 +409,7 @@
           headers: { ...auth, 'Content-Type': 'application/json' },
           body: JSON.stringify({
             text: transcript,
-            language: detected || (language === 'auto' ? 'auto' : language),
+            language: detected || (cfg.language === 'auto' ? 'auto' : cfg.language),
             title: $('title').value.trim() || undefined,
             project: $('project').value.trim() || undefined,
             milestone: $('milestone').value.trim() || undefined,
