@@ -770,8 +770,11 @@ await test('weekly-digest surfaces due reminders and skips completed ones', asyn
   const response = await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'weekly-digest', secret: 'cron-secret' } });
   assertEqual(response.code, 200, 'status');
   assert(response.body.remindersDue >= 1, 'due reminder counted');
-  const digest = await callTool('list_notes', { tag: 'digest', limit: 1 });
-  const body = (await callTool('get_note', { note_id: digest.structuredContent.notes[0].id })).structuredContent.body;
+  // Identify the digest by the id the job returns, not by "newest note". Digest
+  // notes are stamped occurred_at = now, so two created in the same millisecond
+  // compare equal and a stable sort hands back the OLDER one — which predates
+  // the reminders seeded above and made this test flake.
+  const body = (await callTool('get_note', { note_id: response.body.noteId })).structuredContent.body;
   // Scope to the reminders section — the completed note still legitimately
   // appears under "New notes", it just must not be listed as due.
   const remindersSection = body.slice(body.indexOf('## Reminders due'));
@@ -781,8 +784,7 @@ await test('weekly-digest surfaces due reminders and skips completed ones', asyn
   await callTool('save_note', { title: 'Undated digest item', body: 'No deadline.', tags: ['reminder'] });
   const after = await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'weekly-digest', secret: 'cron-secret' } });
   assertEqual(after.code, 200, 'second digest run');
-  const latest = await callTool('list_notes', { tag: 'digest', limit: 1 });
-  const body2 = (await callTool('get_note', { note_id: latest.structuredContent.notes[0].id })).structuredContent.body;
+  const body2 = (await callTool('get_note', { note_id: after.body.noteId })).structuredContent.body;
   assert(!body2.slice(body2.indexOf('## Reminders due')).includes('Undated digest item'), 'undated reminder is not counted as due');
 });
 
@@ -1414,6 +1416,87 @@ await test('deepgram-token reports a missing Deepgram key after auth', async () 
   if (previous !== undefined) process.env.DEEPGRAM_API_KEY = previous;
   delete process.env.TRANSCRIBE_SECRET;
 });
+
+// ---- postgres query shape ----
+// Every other test runs on the in-memory store, so the SQL the production path
+// actually emits was never executed. This repo has already been bitten by that
+// once (the param-serialization/array-literal bug). CONNECTOR_SQL_ENDPOINT lets
+// us point sql.ts at a local stub that speaks the same HTTP shape, so the real
+// noteStore postgres branch runs and we can assert the SQL it builds — no
+// database required.
+
+console.log('\npostgres query shape');
+
+const { createServer } = await import('node:http');
+const { listNotes: listNotesDirect } = await import(`${DIST}/src/core/noteStore.js`);
+
+const sqlCalls = [];
+const sqlStub = createServer((req, res) => {
+  let body = '';
+  req.on('data', (chunk) => { body += chunk; });
+  req.on('end', () => {
+    try { sqlCalls.push(JSON.parse(body || '{}')); } catch { sqlCalls.push({ unparsed: body }); }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    // Batch (schema bootstrap) vs single query — mirror the endpoint's shapes.
+    res.end(JSON.stringify(body.includes('"queries"') ? { results: [] } : { rows: [], rowCount: 0 }));
+  });
+});
+await new Promise((resolve) => sqlStub.listen(0, '127.0.0.1', resolve));
+const stubPort = sqlStub.address().port;
+
+/** Run fn against the SQL stub, returning only the SELECTs it issued. */
+async function captureSql(fn) {
+  const prevUrl = process.env.CONNECTOR_DATABASE_URL;
+  const prevEndpoint = process.env.CONNECTOR_SQL_ENDPOINT;
+  process.env.CONNECTOR_DATABASE_URL = 'postgresql://user:pass@db.example.com/main';
+  process.env.CONNECTOR_SQL_ENDPOINT = `http://127.0.0.1:${stubPort}/sql`;
+  sqlCalls.length = 0;
+  try { await fn(); } finally {
+    if (prevUrl === undefined) delete process.env.CONNECTOR_DATABASE_URL; else process.env.CONNECTOR_DATABASE_URL = prevUrl;
+    if (prevEndpoint === undefined) delete process.env.CONNECTOR_SQL_ENDPOINT; else process.env.CONNECTOR_SQL_ENDPOINT = prevEndpoint;
+  }
+  return sqlCalls.filter((call) => typeof call.query === 'string' && /^\s*select/i.test(call.query));
+}
+
+await test('a due-window query binds params in order and sorts oldest-first', async () => {
+  const selects = await captureSql(() => listNotesDirect({ tenantId: 't1', tag: 'reminder', until: 1_700_000_000_000, limit: 50 }));
+  assertEqual(selects.length, 1, 'one select issued');
+  const { query, params } = selects[0];
+  assertIncludes(query, 'tenant_id = $1', 'tenant is the first placeholder');
+  assertIncludes(query, 'coalesce(occurred_at, created_at) <= $2', 'until is the second');
+  assertIncludes(query, 'limit $3', 'the cap takes the last placeholder');
+  assertIncludes(query, 'order by coalesce(occurred_at, created_at) asc', 'bounded queries come back oldest-first');
+  // Placeholder count must match the params sent, or Postgres rejects the query.
+  assertEqual(params.length, 3, 'three params for three placeholders');
+  assertEqual(params[0], 't1', 'tenant value');
+  assertEqual(params[1], '1700000000000', 'timestamps bind as text, like the wire protocol');
+  assertEqual(params[2], '500', 'candidate cap');
+});
+
+await test('an unbounded query drops the until clause and sorts newest-first', async () => {
+  const selects = await captureSql(() => listNotesDirect({ tenantId: 't1', limit: 10 }));
+  const { query, params } = selects[0];
+  assert(!query.includes('<='), 'no until predicate');
+  assertIncludes(query, 'order by coalesce(occurred_at, created_at) desc', 'unbounded is newest-first');
+  assertIncludes(query, 'limit $2', 'the cap shifts down to $2');
+  assertEqual(params.length, 2, 'params shift with the placeholders');
+});
+
+await test('every filter combined still numbers its placeholders consecutively', async () => {
+  const selects = await captureSql(() => listNotesDirect({ tenantId: 't1', project: 'p', since: 111, until: 222, limit: 5 }));
+  const { query, params } = selects[0];
+  assertIncludes(query, 'tenant_id = $1', '$1');
+  assertIncludes(query, 'project = $2', '$2');
+  assertIncludes(query, '>= $3', '$3');
+  assertIncludes(query, '<= $4', '$4');
+  assertIncludes(query, 'limit $5', '$5');
+  assertEqual(params.length, 5, 'five params for five placeholders');
+  // The real failure mode: a gap or repeat in the sequence binds the wrong value.
+  const placeholders = [...query.matchAll(/\$(\d+)/g)].map((m) => Number(m[1]));
+  assertEqual(placeholders.join(','), '1,2,3,4,5', 'placeholders are consecutive and in order');
+});
+
+await new Promise((resolve) => sqlStub.close(resolve));
 
 // ---- result ----
 
