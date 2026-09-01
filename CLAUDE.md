@@ -13,6 +13,11 @@ serves them to Claude over MCP. See `docs/claude-connector.md`.
 records what is live, what is built but dormant (Cloudflare R2 media, Claude-in-
 LINE), and the exact remaining setup steps.
 
+**How the system is used** is `docs/tutorial.md`. Its §9 reference tables are
+machine-checked: `npm test` compares them against `connectorTools`, the files in
+`api/`, and the cron dispatcher's `JOBS`. **If you add a tool, endpoint, or cron
+job, add its row to that table in the same change** — otherwise CI fails.
+
 ## Commands
 
 - `npm run build` — typecheck (`tsc`, no emit).

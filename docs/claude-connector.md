@@ -1,5 +1,9 @@
 # Claude connector
 
+> This is the **reference** — every setting, every tool, every gate. If you want
+> to know *how to use the system* rather than how it is built, read
+> [`tutorial.md`](tutorial.md) first and come back here for the details.
+
 Tecxbot can act as a **connector for Claude**: it captures what your clients say
 on LINE and WhatsApp, and exposes those conversations to Claude over MCP so a
 session starts already knowing the latest state of every client chat.

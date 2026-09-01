@@ -44,6 +44,8 @@ const cronEndpoint = (await import(`${DIST}/api/cron.js`)).default;
 const transcribeEndpoint = (await import(`${DIST}/api/transcribe.js`)).default;
 const deepgramTokenEndpoint = (await import(`${DIST}/api/deepgram-token.js`)).default;
 const exportEndpoint = (await import(`${DIST}/api/export.js`)).default;
+const { connectorTools } = await import(`${DIST}/src/connector/tools.js`);
+const { JOBS: CRON_JOBS } = await import(`${DIST}/api/cron.js`);
 const { createHmac } = await import('node:crypto');
 
 // ---- harness ----
@@ -1533,6 +1535,54 @@ await test('export since= looks BACKWARD, matching the connector', async () => {
   // fails here. The 2020 note covers the other side.
   assert(titles.includes('Exported just now'), 'a note from this moment is inside a 1-day backward window');
   assert(!titles.includes('Due soon'), 'a 2020 note is outside it');
+});
+
+// ---- docs currency ----
+// docs/tutorial.md documents the whole surface, and documentation rots. These
+// pin its three reference tables to the code, so shipping a tool, endpoint or
+// job without documenting it fails the suite — and so does documenting one that
+// no longer exists. Prose still needs a human; this covers the drift that
+// actually happens.
+
+console.log('\ndocs currency');
+
+const { readFile, readdir } = await import('node:fs/promises');
+const TUTORIAL = 'docs/tutorial.md';
+const tutorial = await readFile(TUTORIAL, 'utf8');
+
+/** The first backticked cell of every row between <!-- name:start --> and :end. */
+function documented(marker) {
+  const block = tutorial.match(new RegExp(`<!-- ${marker}:start -->([\\s\\S]*?)<!-- ${marker}:end -->`));
+  if (!block) throw new Error(`${TUTORIAL} is missing the ${marker} block`);
+  return new Set([...block[1].matchAll(/^\|\s*`([^`]+)`\s*\|/gm)].map((match) => match[1]));
+}
+
+/** Set difference both ways, reported as one readable message. */
+function assertSameSet(actual, expected, label) {
+  const missing = [...expected].filter((item) => !actual.has(item));
+  const extra = [...actual].filter((item) => !expected.has(item));
+  const problems = [
+    missing.length ? `undocumented in ${TUTORIAL}: ${missing.join(', ')}` : '',
+    extra.length ? `documented but not in the code: ${extra.join(', ')}` : '',
+  ].filter(Boolean);
+  assert(problems.length === 0, `${label} — ${problems.join('; ')}`);
+}
+
+await test('every connector tool is documented, and every documented tool exists', async () => {
+  // connectorTools, not toolListPayload(): send_line_reply is hidden unless
+  // CONNECTOR_ALLOW_REPLY is set, but it still needs documenting.
+  const actual = new Set(connectorTools.map((tool) => tool.name));
+  assertSameSet(documented('tool-table'), actual, 'tool table');
+});
+
+await test('every api/ endpoint is documented, and every documented endpoint exists', async () => {
+  const files = await readdir('api');
+  const actual = new Set(files.filter((name) => name.endsWith('.ts')).map((name) => `/api/${name.replace(/\.ts$/, '')}`));
+  assertSameSet(documented('endpoint-table'), actual, 'endpoint table');
+});
+
+await test('every cron job is documented, and every documented job exists', async () => {
+  assertSameSet(documented('job-table'), new Set(CRON_JOBS), 'job table');
 });
 
 // ---- postgres query shape ----

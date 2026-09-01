@@ -1,5 +1,13 @@
 # Tecxbot
 
+> **Using it, rather than working on it? Start with [`docs/tutorial.md`](docs/tutorial.md).**
+> That is the how-to guide, organized by what you want to do. What Tecxbot is
+> *for* today is the Claude connector: client conversations and project memory
+> captured into a durable log and served to your own Claude over MCP. The
+> translation-bot scaffold described below is the template it grew out of — the
+> code is still in the tree, but it is not what the deployment is used for.
+> `docs/deployment-status.md` records exactly what is live and what is dormant.
+
 Tecxbot is a LINE group translation bot template with usage-capped billing hooks.
 
 It is inspired by the public product category of LINE translators, but it is an original scaffold with its own commands, copy, storage boundaries, and payment flow. Use it to launch a bot that can be invited into a LINE group, translate messages across multiple languages, and gate usage behind free and paid character limits.

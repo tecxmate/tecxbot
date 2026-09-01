@@ -187,5 +187,8 @@ them (see `docs/claude-connector.md`):
   no DB/network/creds needed). Both run in CI on every push/PR.
 - For local dev, copy `.env.example` → `.env` and fill what you need. Postgres,
   R2, Deepgram and the reply path all fall back gracefully when unset.
-- Full reference: `docs/claude-connector.md`. Schema: `docs/connector-schema.sql`.
+- How to *use* the system: `docs/tutorial.md` (start there). Full reference:
+  `docs/claude-connector.md`. Schema: `docs/connector-schema.sql`.
   Speech-to-text: `docs/transcribe.md`. PM role: `docs/tecxmate-pm.md`.
+- The tutorial's reference tables are pinned to the code by the smoke suite, so
+  a new tool, endpoint, or cron job must be documented in the same change.

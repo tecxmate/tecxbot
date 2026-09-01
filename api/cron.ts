@@ -24,7 +24,9 @@ import { pushLineMessage } from '../src/platforms/line/client.js';
 // The reminder sweep is the slow one; it sets the ceiling for all jobs.
 export const config = { maxDuration: 300 };
 
-const JOBS = ['line-reminders', 'ops-daily-report', 'connector-prune', 'archive-media', 'weekly-digest', 'daily-brief'] as const;
+// Exported so the docs-currency test can compare it against the job table in
+// docs/tutorial.md — adding a job without documenting it fails the suite.
+export const JOBS = ['line-reminders', 'ops-daily-report', 'connector-prune', 'archive-media', 'weekly-digest', 'daily-brief'] as const;
 type Job = (typeof JOBS)[number];
 
 const DEFAULT_RETENTION_DAYS = 90;
