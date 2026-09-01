@@ -749,6 +749,34 @@ await test('connector-prune honours a disabling ?days=0', async () => {
   assertIncludes(response.body.skipped, 'disabled', 'retention disabled message');
 });
 
+await test('weekly-digest files an activity index into project memory', async () => {
+  const response = await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'weekly-digest', secret: 'cron-secret' } });
+  assertEqual(response.code, 200, 'status');
+  assertEqual(response.body.ok, true, 'ok');
+  assertEqual(response.body.job, 'weekly-digest', 'job name echoed');
+  assert(response.body.conversations >= 1, 'counts the active seeded conversations');
+  assert(typeof response.body.noteId === 'string' && response.body.noteId.length > 0, 'saved a digest note');
+  const notes = await callTool('list_notes', { tag: 'digest' });
+  assert(notes.structuredContent.notes.length >= 1, 'digest note is readable via list_notes');
+  assertIncludes(notes.structuredContent.notes[0].title, 'Weekly digest', 'titled as a digest');
+});
+
+await test('weekly-digest surfaces due reminders and skips completed ones', async () => {
+  await callTool('save_note', { title: 'Chase the invoice', body: 'Follow up with Richard on the Q3 invoice.', tags: ['reminder'] });
+  const doneNote = await callTool('save_note', { title: 'Old chore', body: 'Already handled.', tags: ['reminder', 'done'] });
+  assert(doneNote.structuredContent.id, 'seeded a completed reminder');
+  const response = await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'weekly-digest', secret: 'cron-secret' } });
+  assertEqual(response.code, 200, 'status');
+  assert(response.body.remindersDue >= 1, 'due reminder counted');
+  const digest = await callTool('list_notes', { tag: 'digest', limit: 1 });
+  const body = (await callTool('get_note', { note_id: digest.structuredContent.notes[0].id })).structuredContent.body;
+  // Scope to the reminders section — the completed note still legitimately
+  // appears under "New notes", it just must not be listed as due.
+  const remindersSection = body.slice(body.indexOf('## Reminders due'));
+  assertIncludes(remindersSection, 'Chase the invoice', 'due reminder listed in the digest');
+  assert(!remindersSection.includes('Old chore'), 'completed reminder not listed as due');
+});
+
 // ---- PM reply (send_line_reply) ----
 // The actual LINE push needs the live messaging API, so these cover the
 // fail-closed gating and routing up to the send boundary (the tecxmate channel
