@@ -612,6 +612,88 @@ export const connectorTools: ToolDefinition[] = [
       return { text: `${meta}\n\n${note.body}`, structured: { found: true, ...serializeNote(note) } };
     },
   },
+
+  {
+    name: 'project_status',
+    title: 'Where a project stands',
+    description:
+      'Assemble everything project memory knows about one project in a single call: its living brief, open (not-done) reminders with due dates, recent decisions, and the latest notes. Use this when asked where a project stands, to catch up on one, or before answering as the PM — it is the fastest way to load a project\'s context, and it follows the memory conventions so every teammate sees the same picture. Omit "project" to list the projects that exist.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'The project name, as used when notes were tagged (e.g. "ogsmbooster"). Omit to list known projects.' },
+        limit: { type: 'integer', minimum: 1, maximum: 50, description: 'How many recent notes to include. Default 10.' },
+        tenant_id: tenantProperty,
+      },
+      additionalProperties: false,
+    },
+    async handler(args) {
+      const tenantId = enforcedTenant(args.tenant_id);
+      const project = readString(args.project);
+      const limit = readInt(args.limit, 10, 1, 50);
+
+      // No project named: enumerate what exists, so the caller can pick one.
+      if (!project) {
+        const all = await listNotes({ tenantId, limit: 200 });
+        const projects = [...new Set(all.map((note) => note.project).filter((p): p is string => Boolean(p)))].sort();
+        if (!projects.length) return { text: `${notesEmptyText()}\n\nNo notes carry a project yet — tag them with a project to group them.`, structured: { projects: [] } };
+        return {
+          text: [`# Projects (${projects.length})`, notesBackendLine(), ...projects.map((p) => `- ${p}`), '', 'Call project_status with one of these to load its context.'].filter(Boolean).join('\n'),
+          structured: { projects },
+        };
+      }
+
+      const [brief, reminders, decisions, recent] = await Promise.all([
+        // The living brief is a note titled "<project> — brief" by convention.
+        listNotes({ tenantId, project, limit: 50 }),
+        listNotes({ tenantId, project, tag: 'reminder', limit: 100 }),
+        listNotes({ tenantId, project, tag: 'decision', limit: 10 }),
+        listNotes({ tenantId, project, limit }),
+      ]);
+
+      const briefNote = brief.find((note) => /—\s*brief\s*$/i.test(note.title.trim()) || /\bbrief\b/i.test(note.title));
+      // Open reminders only, and only ones with a real due date (see the daily brief).
+      const open = reminders
+        .filter((note) => !note.tags.includes('done') && note.occurredAt !== undefined)
+        .sort((a, b) => (a.occurredAt ?? 0) - (b.occurredAt ?? 0));
+      const jiraKeys = [...new Set(brief.flatMap((note) => note.tags).filter((tag) => /^[A-Z][A-Z0-9]+-\d+$/.test(tag)))];
+
+      if (!brief.length) {
+        return { text: `No notes found for project "${project}".${notesBackendLine() ? `\n${notesBackendLine()}` : ''}`, structured: { project, found: false } };
+      }
+
+      const now = Date.now();
+      const sections = [`# ${project}`, notesBackendLine(), ''].filter(Boolean);
+      sections.push('## Brief');
+      sections.push(briefNote ? `${briefNote.body}\n\n(note ${briefNote.id} — update it in place with update_note)` : 'No living brief yet. Create one: a note titled "' + project + ' — brief" holding the current state.');
+      sections.push('', `## Open reminders (${open.length})`);
+      sections.push(open.length
+        ? open.map((note) => `- ${(note.occurredAt ?? 0) < now ? '⚠️ overdue' : 'due'} ${formatTimestamp(note.occurredAt ?? note.createdAt)} — ${note.title}\n  id: ${note.id}`).join('\n')
+        : '- none');
+      sections.push('', `## Recent decisions (${decisions.length})`);
+      sections.push(decisions.length
+        ? decisions.map((note) => `- ${note.title} · ${formatTimestamp(note.occurredAt ?? note.createdAt)}\n  id: ${note.id} — ${collapse(note.body)}`).join('\n')
+        : '- none tagged "decision" yet');
+      sections.push('', `## Latest notes (${recent.length})`);
+      sections.push(recent.length
+        ? recent.map((note) => `- ${note.title}${note.milestone ? ` / ${note.milestone}` : ''} · ${formatTimestamp(note.occurredAt ?? note.createdAt)}\n  id: ${note.id}`).join('\n')
+        : '- none');
+      if (jiraKeys.length) sections.push('', `## Linked Jira issues`, jiraKeys.map((key) => `- ${key}`).join('\n'));
+
+      return {
+        text: sections.join('\n'),
+        structured: {
+          project,
+          found: true,
+          brief: briefNote ? serializeNote(briefNote) : null,
+          openReminders: open.map(serializeNote),
+          decisions: decisions.map(serializeNote),
+          recentNotes: recent.map(serializeNote),
+          jiraKeys,
+        },
+      };
+    },
+  },
 ];
 
 function imageError(message: string): ToolOutput {

@@ -229,7 +229,7 @@ await test('notifications get no response', async () => {
 await test('tools/list advertises the read tools plus project-memory tools', async () => {
   const { tools } = await rpc('tools/list');
   // 7 read tools + 5 note tools (send_line_reply is hidden while replies are off).
-  assertEqual(tools.length, 12, 'tool count');
+  assertEqual(tools.length, 13, 'tool count');
   assert(tools.some((tool) => tool.name === 'get_image'), 'get_image is advertised');
   assert(tools.some((tool) => tool.name === 'save_note'), 'save_note is advertised');
   const readTool = tools.find((tool) => tool.name === 'get_conversation');
@@ -348,7 +348,7 @@ await test('a wrong token is rejected', async () => {
 await test('a bearer header authenticates', async () => {
   const response = await httpCall({ headers: AUTH, body: jsonRpc('tools/list') });
   assertEqual(response.code, 200, 'status');
-  assertEqual(response.body.result.tools.length, 12, 'tool count');
+  assertEqual(response.body.result.tools.length, 13, 'tool count');
 });
 
 await test('a query-param key authenticates, for clients that only take a URL', async () => {
@@ -1229,6 +1229,39 @@ await test('save_note and update_note are advertised as write tools', async () =
   const list = tools.find((t) => t.name === 'list_notes');
   assertEqual(save.annotations.readOnlyHint, false, 'save_note is a write tool');
   assertEqual(list.annotations.readOnlyHint, true, 'list_notes is read-only');
+});
+
+// ---- project_status (one-call project context) ----
+
+console.log('\nproject status');
+
+await test('project_status with no project lists the projects that exist', async () => {
+  await callTool('save_note', { title: 'Kickoff', body: 'Scope agreed.', project: 'ogsm-demo', tags: ['decision'] });
+  const result = await callTool('project_status', {});
+  assert(result.structuredContent.projects.includes('ogsm-demo'), 'lists the seeded project');
+});
+
+await test('project_status assembles brief, reminders, decisions and Jira keys', async () => {
+  await callTool('save_note', { title: 'ogsm-demo — brief', body: 'Current state: building the booster.', project: 'ogsm-demo' });
+  await callTool('save_note', { title: 'Send the quote', body: 'Owed to Richard.', project: 'ogsm-demo', tags: ['reminder', 'TECX-42'], occurred_at: '2020-05-01T00:00:00Z' });
+  await callTool('save_note', { title: 'Done already', body: 'Handled.', project: 'ogsm-demo', tags: ['reminder', 'done'], occurred_at: '2020-05-02T00:00:00Z' });
+  await callTool('save_note', { title: 'Undated todo', body: 'No deadline.', project: 'ogsm-demo', tags: ['reminder'] });
+
+  const result = await callTool('project_status', { project: 'ogsm-demo' });
+  const s = result.structuredContent;
+  assertEqual(s.found, true, 'found the project');
+  assertIncludes(s.brief.title, 'brief', 'located the living brief');
+  assertIncludes(result.content[0].text, 'building the booster', 'brief body is inlined for reading');
+  assertEqual(s.openReminders.length, 1, 'only the open, dated reminder');
+  assertEqual(s.openReminders[0].title, 'Send the quote', 'the right one');
+  assert(s.decisions.some((n) => n.title === 'Kickoff'), 'surfaces the decision');
+  assert(s.jiraKeys.includes('TECX-42'), 'extracts the Jira issue key');
+});
+
+await test('project_status reports an unknown project rather than inventing one', async () => {
+  const result = await callTool('project_status', { project: 'no-such-project' });
+  assertEqual(result.structuredContent.found, false, 'not found');
+  assertIncludes(result.content[0].text, 'no-such-project', 'names the project');
 });
 
 // ---- transcribe endpoint (speech-to-text ingest) ----
