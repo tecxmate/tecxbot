@@ -343,3 +343,28 @@ automatically on the first save; see `docs/connector-schema.sql`. Because it is
 platform-agnostic, anything that can reach `/api/mcp` — or the speech-to-text
 endpoint `POST /api/transcribe` (record → Share → text, see `docs/transcribe.md`)
 — can file into the same memory Claude reads.
+
+### Memory conventions
+
+So every teammate's Claude finds the same things (these are also baked into the
+connector's instructions):
+
+- **Decisions** → a note tagged `decision` (plus the project). "What did we
+  decide about X?" becomes `list_notes tag=decision` / `search_notes`.
+- **Reminders** → a note tagged `reminder` with `occurred_at` = the **due**
+  time; complete it by adding the tag `done`. Due reminders surface in the
+  weekly digest.
+- **Living brief** → each project keeps one note titled `<project> — brief` as
+  its current state, updated in place with `update_note`.
+- **Jira** → tag notes with the issue key (e.g. `TECX-42`) to cross-reference
+  memory and Jira.
+
+### Weekly digest
+
+A Vercel cron (`/api/weekly-digest`, Mondays 06:00 Taipei) files a mechanical
+index of the week into memory as a note tagged `digest`: active conversations,
+new notes, and reminders coming due — with ids ready for `get_conversation` /
+`get_note`. It is deliberately LLM-free; ask Claude to expand the latest digest
+into a real summary ("what happened this week?"). Run it on demand with
+`GET /api/cron?job=weekly-digest&secret=<CRON_SECRET>` (`?days=` widens the
+window).

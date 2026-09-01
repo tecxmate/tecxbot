@@ -11,7 +11,8 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 import { buildWatchlistBrief } from '../src/botSystems/mcpBrief.js';
 import { buildDailyOpsReport } from '../src/ops/companyOps.js';
 import { getOpsConfig } from '../src/ops/config.js';
-import { pruneOlderThan, storeBackend } from '../src/core/conversationStore.js';
+import { listConversations, pruneOlderThan, storeBackend } from '../src/core/conversationStore.js';
+import { listNotes, saveNote } from '../src/core/noteStore.js';
 import { archivePendingMedia } from '../src/connector/media.js';
 import { isR2Configured } from '../src/core/r2.js';
 import { getDueBriefReminders, markBriefReminderSent } from '../src/core/personalProfileStore.js';
@@ -22,7 +23,7 @@ import { pushLineMessage } from '../src/platforms/line/client.js';
 // The reminder sweep is the slow one; it sets the ceiling for all jobs.
 export const config = { maxDuration: 300 };
 
-const JOBS = ['line-reminders', 'ops-daily-report', 'connector-prune', 'archive-media'] as const;
+const JOBS = ['line-reminders', 'ops-daily-report', 'connector-prune', 'archive-media', 'weekly-digest'] as const;
 type Job = (typeof JOBS)[number];
 
 const DEFAULT_RETENTION_DAYS = 90;
@@ -44,7 +45,65 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (job === 'line-reminders') return runLineReminders(req, res);
   if (job === 'connector-prune') return runConnectorPrune(req, res);
   if (job === 'archive-media') return runArchiveMedia(req, res);
+  if (job === 'weekly-digest') return runWeeklyDigest(req, res);
   return runOpsDailyReport(req, res);
+}
+
+// Weekly project digest — a mechanical index of the week, filed into project
+// memory as a note (tagged "digest") so any connected Claude can pick it up and
+// expand it. Deliberately LLM-free: it lists activity, it does not summarize.
+// Also surfaces due reminders: notes tagged "reminder" whose occurred_at is the
+// due time and that are not yet tagged "done".
+async function runWeeklyDigest(req: VercelRequest, res: VercelResponse) {
+  const tenantId = process.env.CONNECTOR_TENANT_ID?.trim() || process.env.DEFAULT_TENANT_ID?.trim() || 'demo';
+  const days = Math.min(31, Math.max(1, Number(firstQueryValue(req.query.days)) || 7));
+  const now = Date.now();
+  const since = now - days * MS_PER_DAY;
+  try {
+    const [conversations, recentNotes, reminderNotes] = await Promise.all([
+      listConversations({ tenantId, since, limit: 50 }),
+      listNotes({ tenantId, since, limit: 100 }),
+      listNotes({ tenantId, tag: 'reminder', limit: 200 }),
+    ]);
+    // New notes, minus earlier digests; reminders due within the coming week and not done.
+    const notes = recentNotes.filter((note) => !note.tags.includes('digest'));
+    const remindersDue = reminderNotes
+      .filter((note) => !note.tags.includes('done') && (note.occurredAt ?? note.createdAt) <= now + 7 * MS_PER_DAY)
+      .sort((a, b) => (a.occurredAt ?? a.createdAt) - (b.occurredAt ?? b.createdAt));
+
+    if (!conversations.length && !notes.length && !remindersDue.length) {
+      return res.status(200).json({ ok: true, job: 'weekly-digest', skipped: 'nothing to report', windowDays: days });
+    }
+
+    const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+    const sections = [`# Weekly digest — ${day(since)} → ${day(now)} (UTC)`, ''];
+    sections.push(`## Active conversations (${conversations.length})`);
+    sections.push(conversations.length
+      ? conversations.map((c) => `- ${c.title ?? c.conversationId} — last ${day(c.lastMessageAt)}${c.messageCount ? ` · ${c.messageCount} msgs total` : ''}\n  id: ${c.conversationId}`).join('\n')
+      : '- none');
+    sections.push('', `## New notes (${notes.length})`);
+    sections.push(notes.length
+      ? notes.map((n) => `- ${n.title}${n.project ? ` · ${n.project}` : ''}${n.milestone ? ` / ${n.milestone}` : ''} — ${day(n.occurredAt ?? n.createdAt)}\n  id: ${n.id}`).join('\n')
+      : '- none');
+    sections.push('', `## Reminders due (${remindersDue.length})`);
+    sections.push(remindersDue.length
+      ? remindersDue.map((n) => `- due ${day(n.occurredAt ?? n.createdAt)} — ${n.title}\n  id: ${n.id} (add tag "done" to complete)`).join('\n')
+      : '- none');
+    sections.push('', 'Open any item with get_conversation / get_note. Ask Claude to expand this digest into a summary.');
+
+    const note = await saveNote({
+      tenantId,
+      title: `Weekly digest — ${day(now)}`,
+      body: sections.join('\n'),
+      source: 'note',
+      tags: ['digest'],
+      occurredAt: now,
+    });
+    return res.status(200).json({ ok: true, job: 'weekly-digest', windowDays: days, conversations: conversations.length, notes: notes.length, remindersDue: remindersDue.length, noteId: note.id });
+  } catch (error) {
+    console.error('[cron:weekly-digest] Failed:', error);
+    return res.status(500).json({ ok: false, job: 'weekly-digest', error: formatError(error) });
+  }
 }
 
 async function runArchiveMedia(req: VercelRequest, res: VercelResponse) {

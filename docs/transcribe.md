@@ -89,6 +89,25 @@ Now: record a voice memo → **Share** → **Transcribe** → the text comes bac
 (with `save=1`) it's already in project memory for Claude to tag by project and
 milestone. Add `&project=ogsmbooster` to the URL to pre-file it under a project.
 
+## Save text to memory (no audio)
+
+The same endpoint accepts **plain text as JSON** — the browser upload page uses
+this internally, and it doubles as a universal quick-capture: any thought,
+article snippet, or pasted message can be filed into project memory from a
+share-sheet shortcut.
+
+```bash
+curl -s -X POST "https://tecxbot.vercel.app/api/transcribe" \
+  -H "Authorization: Bearer $TRANSCRIBE_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"text":"Client agreed to the Q4 scope.","title":"Scope decision","project":"ogsmbooster","tags":["decision"]}'
+```
+
+iOS Shortcut ("Save to memory"): **Receive text from Share Sheet** → **Get
+Contents of URL** (POST, `Authorization` header, Request Body: **JSON** with a
+`text` field set to the Shortcut Input) → done. Share any selected text and it
+lands in memory, taggable by Claude later.
+
 ## Android
 
 Android's built-in shortcuts can't POST a file, so use a helper that registers a
