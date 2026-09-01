@@ -115,6 +115,7 @@ curl -s https://your-domain.vercel.app/api/mcp \
 | `send_line_reply` | **Write** — reply into a LINE conversation as the TECXMATE PM. Only present when replies are enabled (see §10); the connector is read-only otherwise. |
 | `save_note` / `update_note` | **Write** — file a note or transcript into durable **project memory** and tag it (project, milestone, participants, tags, occurred_at). See §11. |
 | `list_notes` / `search_notes` / `get_note` | Read project memory — browse by project/milestone/tag/participant, search the text, open one in full. |
+| `project_status` | "Where does project X stand?" in one call — living brief, open reminders, recent decisions, latest notes, linked Jira keys. Call with no project to list them. See §11. |
 | `connector_status` | Storage backend, capture state, replies, media archival, configured channels, how much history exists. Use it when a tool returns nothing. |
 
 Time windows accept relative values (`24h`, `7d`, `2w`), an ISO date
@@ -343,6 +344,18 @@ automatically on the first save; see `docs/connector-schema.sql`. Because it is
 platform-agnostic, anything that can reach `/api/mcp` — or the speech-to-text
 endpoint `POST /api/transcribe` (record → Share → text, see `docs/transcribe.md`)
 — can file into the same memory Claude reads.
+
+### `project_status` — a project in one call
+
+`project_status({ project })` assembles everything memory knows about one
+project: its **living brief** (inlined so it can be read directly), **open
+reminders** with due dates (not-done, dated), **recent decisions**, the **latest
+notes**, and any **Jira issue keys** found in tags. Called with no `project`, it
+lists the projects that exist.
+
+It exists because catching up otherwise means four or five calls plus knowing the
+conventions below. This is the fastest way for any teammate's Claude to load the
+same picture of a project — and the right first call before answering as the PM.
 
 ### Memory conventions
 

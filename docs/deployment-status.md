@@ -38,10 +38,11 @@ tasks, and the reasoning happens in the operator's own Claude.
   `…/api/line-webhook?channel=tecxmate`, the account's **Chat toggle is OFF**
   (required — with Chat on, a LINE OA auto-leaves groups), and the bot is
   **capture-only** (`TECXMATE_CAPTURE_ONLY` defaults true): it never posts.
-- **12 connector tools** — read: `latest_context`, `list_conversations`,
+- **13 connector tools** — read: `latest_context`, `list_conversations`,
   `get_conversation`, `search_messages`, `get_image`, `get_file`,
-  `connector_status`, `list_notes`, `search_notes`, `get_note`; write:
-  `save_note`, `update_note`. (`send_line_reply` appears only when enabled — §4.)
+  `connector_status`, `list_notes`, `search_notes`, `get_note`,
+  `project_status`; write: `save_note`, `update_note`. (`send_line_reply`
+  appears only when enabled — §4.)
 - **9 serverless functions** — comfortably under the Hobby cap of 12. Stripe,
   stock-chart, and the marketing landing page were removed; `/` serves a minimal
   holding page.

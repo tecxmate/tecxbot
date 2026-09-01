@@ -37,12 +37,16 @@ function buildInstructions(): string {
     '',
     'It also holds durable project memory — notes and transcripts, independent of any chat platform. save_note files a transcript or decision; update_note tags it with project, milestone, participants, tags, and when it occurred; list_notes / search_notes / get_note read it back. Keep the memory organized: when you file or are handed a transcript, tag it with the project and milestone it belongs to so the whole project stays coherent across sessions and clients.',
     '',
+    'When the user asks where a project stands, wants to catch up on one, or you are about to answer as the PM, call project_status first — one call returns that project\'s living brief, open reminders, recent decisions, latest notes, and linked Jira keys. Call it with no project to see which projects exist.',
+    '',
     'Memory conventions (follow these so every teammate\'s Claude finds the same things):',
     '- Decisions: when the operator records a decision, save_note it with tag "decision" (and the project). "What did we decide about X?" is then search_notes/list_notes tag=decision.',
     '- Reminders: a note tagged "reminder" with occurred_at set to the DUE time is a follow-up. ALWAYS set occurred_at when saving one — an undated reminder is never pushed in the daily brief. Complete one by adding the tag "done" via update_note. Weekly digests list reminders coming due.',
     '- Living brief: each project keeps one note titled "<project> — brief" as its current state. Update it in place with update_note when things change, rather than piling up new notes.',
     '- Jira: when a note relates to a Jira issue, include the issue key (e.g. "TECX-42") as a tag, so memory and Jira cross-reference.',
     '- Digests: a weekly cron files an activity index tagged "digest" (conversations, new notes, due reminders). When asked "what happened this week", start from the latest digest note and expand it.',
+    '',
+    'Getting things INTO memory: you can save_note directly. The operator can also record audio and upload it at /transcribe.html (any length, transcribed and filed automatically), or POST text to /api/transcribe. If they mention a recording or meeting they want captured, point them there rather than asking them to paste it.',
     '',
   ];
   // The PM draft-in-chat role is the same whether or not the send tool exists —
