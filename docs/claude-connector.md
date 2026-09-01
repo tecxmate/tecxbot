@@ -353,7 +353,8 @@ connector's instructions):
   decide about X?" becomes `list_notes tag=decision` / `search_notes`.
 - **Reminders** → a note tagged `reminder` with `occurred_at` = the **due**
   time; complete it by adding the tag `done`. Due reminders surface in the
-  weekly digest.
+  weekly digest, and — if the daily brief is switched on (below) — get pushed
+  to an internal LINE group each morning.
 - **Living brief** → each project keeps one note titled `<project> — brief` as
   its current state, updated in place with `update_note`.
 - **Jira** → tag notes with the issue key (e.g. `TECX-42`) to cross-reference
@@ -368,3 +369,28 @@ new notes, and reminders coming due — with ids ready for `get_conversation` /
 into a real summary ("what happened this week?"). Run it on demand with
 `GET /api/cron?job=weekly-digest&secret=<CRON_SECRET>` (`?days=` widens the
 window).
+
+### Daily reminder brief (opt-in push)
+
+`/api/daily-brief` (cron, 23:00 UTC = 07:00 Taipei) pushes reminders that are
+**due or overdue** to an internal LINE group — the one push in this system that
+reaches you without being asked.
+
+It is deliberately frugal:
+
+- **Fail-closed** — with no `CONNECTOR_BRIEF_CONVERSATION_ID` the job does
+  nothing at all.
+- **Silent when there's nothing to say** — no due reminders means no push, so a
+  quiet week costs zero LINE quota.
+- **A due date is required to push** — only reminders with an explicit
+  `occurred_at` are pushed. An undated `reminder` note is a to-do without a
+  deadline: it shows up in `list_notes` and the weekly digest, but never triggers
+  a push (otherwise it would read as "overdue" forever and push every day).
+- **Capped** — it pushes through the same path as PM replies, sharing
+  `CONNECTOR_REPLY_MONTHLY_CAP` and its counter, so briefs can never overrun the
+  monthly budget unseen.
+- **Independent of `CONNECTOR_ALLOW_REPLY`** — notifying your own group is not
+  the same permission as writing to a client.
+
+Run it on demand with `GET /api/cron?job=daily-brief&secret=<CRON_SECRET>`
+(`?days=N` looks N days ahead).

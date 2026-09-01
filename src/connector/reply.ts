@@ -145,6 +145,46 @@ async function draftForReview(target: ConversationSummary, text: string, reviewI
   return { ok: true, mode: 'review', conversationId: target.conversationId, reviewConversationId: review.conversationId, to, at };
 }
 
+export type NoticeOutcome =
+  | { ok: true; conversationId: string; to: string; at: number }
+  | { ok: false; reason: 'empty' | 'not_found' | 'not_line' | 'no_token' | 'over_cap'; used?: number; cap?: number };
+
+/**
+ * Push a plain internal notice (e.g. the daily reminder brief) to one of our own
+ * LINE groups.
+ *
+ * Distinct from sendLineReply: that one is a *client reply*, with allowlist and
+ * review-mode draft framing. This one goes straight to an internal group and is
+ * gated by its own caller (no CONNECTOR_ALLOW_REPLY), because notifying yourself
+ * is not the same permission as writing to a client.
+ *
+ * It shares the SAME monthly cap and the SAME accounting prefix, so a chatty
+ * brief can never quietly spend quota the cap cannot see.
+ */
+export async function pushInternalNotice(input: { conversationId: string; text: string; tenantId?: string }): Promise<NoticeOutcome> {
+  const text = input.text.trim();
+  if (!text) return { ok: false, reason: 'empty' };
+
+  const target = await getConversation(input.conversationId, input.tenantId);
+  if (!target) return { ok: false, reason: 'not_found' };
+  if (target.platform !== 'line') return { ok: false, reason: 'not_line' };
+
+  const cap = monthlyCap();
+  if (cap !== undefined) {
+    const used = await countReplyPushesSince(monthStartMs());
+    if (used >= cap) return { ok: false, reason: 'over_cap', used, cap };
+  }
+
+  const token = channelToken(target.channelId);
+  if (!token) return { ok: false, reason: 'no_token' };
+
+  const to = target.externalConversationId;
+  await pushLineMessage(to, { text }, token);
+  const at = Date.now();
+  await recordOutbound(target, text, at);
+  return { ok: true, conversationId: target.conversationId, to, at };
+}
+
 function formatDraft(target: ConversationSummary, text: string): string {
   const label = target.title || target.externalConversationId;
   return [

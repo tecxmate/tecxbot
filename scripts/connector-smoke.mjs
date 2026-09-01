@@ -777,6 +777,91 @@ await test('weekly-digest surfaces due reminders and skips completed ones', asyn
   assert(!remindersSection.includes('Old chore'), 'completed reminder not listed as due');
 });
 
+await test('daily-brief fails closed with no brief conversation configured', async () => {
+  delete process.env.CONNECTOR_BRIEF_CONVERSATION_ID;
+  const response = await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'daily-brief', secret: 'cron-secret' } });
+  assertEqual(response.code, 200, 'status');
+  assertIncludes(response.body.skipped, 'CONNECTOR_BRIEF_CONVERSATION_ID', 'names the missing setting');
+});
+
+// These run in their own tenant so the reminders seeded by the digest tests
+// cannot leak in — otherwise "nothing is due" would be false and the tests would
+// pass through the not_found path instead of the branch they name.
+const BRIEF_TENANT = 'brief-tenant';
+
+await test('daily-brief pushes nothing when no reminder is due', async () => {
+  process.env.CONNECTOR_BRIEF_CONVERSATION_ID = 'line:tecxmate:group:C_nonexistent';
+  process.env.CONNECTOR_TENANT_ID = BRIEF_TENANT;
+  await callTool('save_note', { title: 'Way off', body: 'Not due yet.', tags: ['reminder'], occurred_at: '2099-01-01T00:00:00Z' });
+  const response = await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'daily-brief', secret: 'cron-secret' } });
+  assertEqual(response.code, 200, 'status');
+  // Assert the branch itself, not just pushed:false — which the not_found path
+  // would also satisfy while the quota-saving early return was gone entirely.
+  assertEqual(response.body.due, 0, 'nothing counted as due');
+  assertIncludes(response.body.skipped, 'nothing due', 'took the early return');
+  assertEqual(response.body.reason, undefined, 'never reached the push path');
+  delete process.env.CONNECTOR_TENANT_ID;
+  delete process.env.CONNECTOR_BRIEF_CONVERSATION_ID;
+});
+
+await test('daily-brief ignores a reminder with no due date (quota guarantee)', async () => {
+  process.env.CONNECTOR_BRIEF_CONVERSATION_ID = 'line:tecxmate:group:C_nonexistent';
+  process.env.CONNECTOR_TENANT_ID = BRIEF_TENANT;
+  // occurred_at is optional on save_note. Falling back to created_at would make
+  // this "due" immediately and every day after — a daily push forever.
+  await callTool('save_note', { title: 'Undated thought', body: 'No due date given.', tags: ['reminder'] });
+  const response = await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'daily-brief', secret: 'cron-secret' } });
+  assertEqual(response.code, 200, 'status');
+  assertEqual(response.body.due, 0, 'an undated reminder is not due');
+  assertIncludes(response.body.skipped, 'nothing due', 'still spends no quota');
+  delete process.env.CONNECTOR_TENANT_ID;
+  delete process.env.CONNECTOR_BRIEF_CONVERSATION_ID;
+});
+
+await test('daily-brief collects due reminders and stops at the unresolvable target', async () => {
+  process.env.CONNECTOR_BRIEF_CONVERSATION_ID = 'line:tecxmate:group:C_nonexistent';
+  process.env.CONNECTOR_TENANT_ID = BRIEF_TENANT;
+  await callTool('save_note', { title: 'Overdue thing', body: 'Should appear.', tags: ['reminder'], occurred_at: '2020-01-01T00:00:00Z' });
+  const response = await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'daily-brief', secret: 'cron-secret' } });
+  assertEqual(response.code, 200, 'status');
+  assertEqual(response.body.due, 1, 'exactly the dated, not-done reminder');
+  assertEqual(response.body.pushed, false, 'no push without a resolvable conversation');
+  assertEqual(response.body.reason, 'not_found', 'reports why it could not deliver');
+  delete process.env.CONNECTOR_TENANT_ID;
+  delete process.env.CONNECTOR_BRIEF_CONVERSATION_ID;
+});
+
+await test('daily-brief resolves the push target across tenants, not with the notes tenant', async () => {
+  // Reproduces the real deployment: notes are saved under the NOTES tenant
+  // ('demo' by default), but captured LINE groups are stored under the CHANNEL's
+  // tenant. Looking the target up with the notes tenant finds nothing, so the
+  // brief would silently never deliver. Guard that with a distinguishable
+  // outcome: a resolved conversation gets as far as the missing channel token.
+  delete process.env.CONNECTOR_TENANT_ID; // the documented single-owner setup
+  await recordMessage({
+    tenantId: 'tecxmate', channelId: 'tecxmate', platform: 'line', conversationType: 'group',
+    externalConversationId: 'C_brief_target', direction: 'inbound', text: 'seed', externalMessageId: 'brief-seed-1',
+  });
+  await callTool('save_note', { title: 'Cross-tenant due item', body: 'x', tags: ['reminder'], occurred_at: '2020-01-03T00:00:00Z' });
+  process.env.CONNECTOR_BRIEF_CONVERSATION_ID = buildConversationId({ platform: 'line', channelId: 'tecxmate', conversationType: 'group', externalConversationId: 'C_brief_target' });
+  const response = await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'daily-brief', secret: 'cron-secret' } });
+  assertEqual(response.code, 200, 'status');
+  assert(response.body.due >= 1, 'has a due reminder to deliver');
+  assertEqual(response.body.reason, 'no_token', 'found the group under its own tenant (not_found here means the tenant lookup regressed)');
+  delete process.env.CONNECTOR_BRIEF_CONVERSATION_ID;
+});
+
+await test('daily-brief excludes reminders tagged done', async () => {
+  process.env.CONNECTOR_BRIEF_CONVERSATION_ID = 'line:tecxmate:group:C_nonexistent';
+  process.env.CONNECTOR_TENANT_ID = BRIEF_TENANT;
+  await callTool('save_note', { title: 'Finished chore', body: 'Handled.', tags: ['reminder', 'done'], occurred_at: '2020-01-02T00:00:00Z' });
+  const response = await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'daily-brief', secret: 'cron-secret' } });
+  assertEqual(response.code, 200, 'status');
+  assertEqual(response.body.due, 1, 'still just the one open reminder — done is filtered out');
+  delete process.env.CONNECTOR_TENANT_ID;
+  delete process.env.CONNECTOR_BRIEF_CONVERSATION_ID;
+});
+
 // ---- PM reply (send_line_reply) ----
 // The actual LINE push needs the live messaging API, so these cover the
 // fail-closed gating and routing up to the send boundary (the tecxmate channel
