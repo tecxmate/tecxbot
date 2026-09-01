@@ -1231,6 +1231,44 @@ await test('save_note and update_note are advertised as write tools', async () =
   assertEqual(list.annotations.readOnlyHint, true, 'list_notes is read-only');
 });
 
+await test('list_notes until= bounds a due window and looks FORWARD, unlike since=', async () => {
+  const inTwoDays = new Date(Date.now() + 2 * 86_400_000).toISOString();
+  await callTool('save_note', { title: 'Due soon', body: 'x', tags: ['window-test'], occurred_at: '2020-01-01T00:00:00Z' });
+  await callTool('save_note', { title: 'Due in two days', body: 'x', tags: ['window-test'], occurred_at: inTwoDays });
+  await callTool('save_note', { title: 'Due far off', body: 'x', tags: ['window-test'], occurred_at: '2099-01-01T00:00:00Z' });
+  // "7d" as an upper bound means "within the next 7 days". The two-days-out note
+  // is the one that proves the direction: it only qualifies if until looks
+  // FORWARD (now + 7d). If until subtracted like `since` does (now - 7d) it
+  // would be excluded, so this assertion is what catches a reversed bound.
+  const soon = await callTool('list_notes', { tag: 'window-test', until: '7d' });
+  const titles = soon.structuredContent.notes.map((n) => n.title);
+  assert(titles.includes('Due soon'), 'includes the already-due note');
+  assert(titles.includes('Due in two days'), 'includes a note due inside the forward window');
+  assert(!titles.includes('Due far off'), 'excludes the far-future note');
+  // Unbounded still returns both, newest first.
+  const all = await callTool('list_notes', { tag: 'window-test' });
+  assertEqual(all.structuredContent.notes.length, 3, 'all three without a bound');
+  assertEqual(all.structuredContent.notes[0].title, 'Due far off', 'unbounded is newest-first');
+  assertEqual(soon.structuredContent.notes[0].title, 'Due soon', 'a bounded query is oldest-first (most overdue on top)');
+});
+
+await test('connector_status reports readiness for each subsystem without leaking secrets', async () => {
+  delete process.env.TRANSCRIBE_SECRET;
+  delete process.env.CONNECTOR_BRIEF_CONVERSATION_ID;
+  process.env.DEEPGRAM_API_KEY = 'dg-secret-value';
+  const result = await callTool('connector_status', {});
+  const r = result.structuredContent.readiness;
+  assertEqual(r.transcription.deepgramKey, true, 'sees the deepgram key');
+  assertEqual(r.transcription.transcribeSecret, false, 'sees the missing secret');
+  assertEqual(r.dailyBrief, false, 'brief not configured');
+  assertEqual(typeof r.notesDurable, 'boolean', 'reports note durability');
+  // The half-configured case must be named, not silently "off".
+  assertIncludes(result.content[0].text, 'TRANSCRIBE_SECRET', 'names the missing piece');
+  assert(!result.content[0].text.includes('dg-secret-value'), 'never prints a secret value');
+  assert(!JSON.stringify(result.structuredContent).includes('dg-secret-value'), 'no secret in structured output either');
+  delete process.env.DEEPGRAM_API_KEY;
+});
+
 // ---- project_status (one-call project context) ----
 
 console.log('\nproject status');

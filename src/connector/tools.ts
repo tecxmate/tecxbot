@@ -268,6 +268,10 @@ export const connectorTools: ToolDefinition[] = [
         `replies: ${replyStatusLine()}`,
         ...(isReplyEnabled() && quota.cap ? [`reply pushes this month: ${quota.used} / ${quota.cap}`] : []),
         `media archival: ${isR2Configured() ? 'on (Cloudflare R2)' : 'off — media served live from LINE, recent only'}`,
+        `project memory: ${isNoteStoreDurable() ? 'durable (postgres)' : 'in-memory — notes are lost on cold start'}`,
+        `speech-to-text: ${sttStatusLine()}`,
+        `daily reminder brief: ${envSet('CONNECTOR_BRIEF_CONVERSATION_ID') ? 'on' : 'off — set CONNECTOR_BRIEF_CONVERSATION_ID to an internal group'}`,
+        `scheduled jobs: ${envSet('CRON_SECRET') ? 'runnable' : 'BLOCKED — no CRON_SECRET, so digest/brief/archive refuse to run in production'}`,
         `conversations captured: ${stats.conversations}`,
         `messages captured: ${stats.messages}`,
         `last captured message: ${stats.lastMessageAt ? formatTimestamp(stats.lastMessageAt) : 'none yet'}`,
@@ -284,6 +288,13 @@ export const connectorTools: ToolDefinition[] = [
           capture: isCaptureEnabled(),
           replies: { enabled: isReplyEnabled(), mode: isReviewMode() ? 'review' : 'direct', reviewConversationId: reviewConversationId() ?? null, allowlist: replyAllowlist(), monthlyCap: quota.cap ?? null, pushesThisMonth: quota.used },
           mediaArchival: isR2Configured(),
+          // Readiness of each subsystem. Booleans only — never the secret values.
+          readiness: {
+            notesDurable: isNoteStoreDurable(),
+            transcription: { deepgramKey: envSet('DEEPGRAM_API_KEY'), transcribeSecret: envSet('TRANSCRIBE_SECRET') },
+            dailyBrief: envSet('CONNECTOR_BRIEF_CONVERSATION_ID'),
+            cronSecret: envSet('CRON_SECRET'),
+          },
           channels,
         },
       };
@@ -538,6 +549,7 @@ export const connectorTools: ToolDefinition[] = [
         tag: { type: 'string', description: 'Only notes carrying this tag.' },
         participant: { type: 'string', description: 'Only notes involving this participant (substring match).' },
         since: sinceProperty,
+        until: sinceProperty2('Only notes at or before this time — e.g. "7d" for what is due within a week, an ISO date, or omit. Combined with tag "reminder" this answers "what is due by Friday?"; it also orders results oldest-first so the most overdue come out on top.'),
         limit: { type: 'integer', minimum: 1, maximum: 200, description: 'Maximum notes to return. Default 25.' },
         tenant_id: tenantProperty,
       },
@@ -551,6 +563,7 @@ export const connectorTools: ToolDefinition[] = [
         tag: readString(args.tag),
         participant: readString(args.participant),
         since: parseSince(readString(args.since)),
+        until: parseUntil(readString(args.until)),
         limit: readInt(args.limit, 25, 1, 200),
       });
       if (!notes.length) return { text: notesEmptyText(), structured: { notes: [] } };
@@ -911,6 +924,23 @@ function notesBackendLine(): string {
   return isNoteStoreDurable() ? '' : '> Notes are in-memory (no CONNECTOR_DATABASE_URL) — they are lost on cold start. Set CONNECTOR_DATABASE_URL for durable project memory.';
 }
 
+/** Whether an env var is set — never its value, which may be a secret. */
+function envSet(name: string): boolean {
+  return Boolean(process.env[name]?.trim());
+}
+
+// Both halves are needed: the Deepgram key does the work, the secret opens the
+// door. Naming the missing one turns a silent 401/500 into an obvious fix.
+function sttStatusLine(): string {
+  const key = envSet('DEEPGRAM_API_KEY');
+  const secret = envSet('TRANSCRIBE_SECRET');
+  if (key && secret) return 'ready (/transcribe.html and POST /api/transcribe)';
+  if (!key && !secret) return 'off — set DEEPGRAM_API_KEY and TRANSCRIBE_SECRET';
+  return key
+    ? 'blocked — DEEPGRAM_API_KEY is set but TRANSCRIBE_SECRET is not, so the endpoint refuses every request'
+    : 'blocked — TRANSCRIBE_SECRET is set but DEEPGRAM_API_KEY is not, so transcription cannot run';
+}
+
 function notesEmptyText(): string {
   return `No notes in project memory yet${isNoteStoreDurable() ? '' : ' (in-memory store — set CONNECTOR_DATABASE_URL to persist)'}. Save one with save_note.`;
 }
@@ -951,6 +981,25 @@ export function parseSince(value: string | undefined, fallback?: string): number
     const unit = relative[2].toLowerCase();
     const ms = unit === 'm' ? 60_000 : unit === 'h' ? 3_600_000 : unit === 'd' ? 86_400_000 : 604_800_000;
     return Date.now() - amount * ms;
+  }
+  const parsed = Date.parse(raw);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * Upper time bound for a due-date query. Deliberately NOT parseSince: a relative
+ * window there means "N ago" (looking back), whereas an `until` of "7d" means
+ * "within the next 7 days" (looking forward). An ISO date is absolute in both.
+ */
+export function parseUntil(value: string | undefined): number | undefined {
+  const raw = value?.trim();
+  if (!raw || raw.toLowerCase() === 'all') return undefined;
+  const relative = raw.match(/^(\d+)\s*(m|h|d|w)$/i);
+  if (relative) {
+    const amount = Number(relative[1]);
+    const unit = relative[2].toLowerCase();
+    const ms = unit === 'm' ? 60_000 : unit === 'h' ? 3_600_000 : unit === 'd' ? 86_400_000 : 604_800_000;
+    return Date.now() + amount * ms;
   }
   const parsed = Date.parse(raw);
   return Number.isFinite(parsed) ? parsed : undefined;
