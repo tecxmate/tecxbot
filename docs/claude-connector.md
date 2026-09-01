@@ -116,7 +116,7 @@ curl -s https://your-domain.vercel.app/api/mcp \
 | `save_note` / `update_note` | **Write** — file a note or transcript into durable **project memory** and tag it (project, milestone, participants, tags, occurred_at). See §11. |
 | `list_notes` / `search_notes` / `get_note` | Read project memory — browse by project/milestone/tag/participant, search the text, open one in full. |
 | `project_status` | "Where does project X stand?" in one call — living brief, open reminders, recent decisions, latest notes, linked Jira keys. Call with no project to list them. See §11. |
-| `connector_status` | Storage backend, capture state, replies, media archival, configured channels, how much history exists. Use it when a tool returns nothing. |
+| `connector_status` | Storage backend, capture state, replies, media archival, **readiness of every subsystem** (project memory, speech-to-text, daily brief, cron secret), configured channels, how much history exists. Use it when a tool returns nothing, or to find which setting is missing. Reports booleans, never secret values. |
 
 Time windows accept relative values (`24h`, `7d`, `2w`), an ISO date
 (`2026-08-01`), or `all`.

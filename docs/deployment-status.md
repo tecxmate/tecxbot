@@ -95,7 +95,10 @@ Write on one bucket):
 
 **Verify rather than assume** — an earlier revision of this note claimed both
 "dormant" and "done". The single source of truth is `connector_status`, which
-reports `media archival: on (Cloudflare R2)` or `off`. A one-off sweep:
+now reports the readiness of every subsystem in one call (storage, project
+memory, speech-to-text, daily brief, cron secret, media archival) — booleans
+only, never secret values. It is the fastest way to find which setting is
+missing; for R2 it prints `media archival: on (Cloudflare R2)` or `off`. A one-off sweep:
 `GET /api/cron?job=archive-media&secret=<CRON_SECRET>` → `{archived, skipped, errors}`.
 
 Scheduling, once configured — two drivers, both wanted:
