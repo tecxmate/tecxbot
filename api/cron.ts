@@ -137,12 +137,16 @@ async function runWeeklyDigest(req: VercelRequest, res: VercelResponse) {
     const [conversations, recentNotes, reminderNotes] = await Promise.all([
       listConversations({ tenantId, since, limit: 50 }),
       listNotes({ tenantId, since, limit: 100 }),
-      listNotes({ tenantId, tag: 'reminder', limit: 200 }),
+      // Bounded by due date so the row cap trims the least-overdue tail rather
+      // than the most overdue head — same reasoning as the daily brief.
+      listNotes({ tenantId, tag: 'reminder', until: now + 7 * MS_PER_DAY, limit: 200 }),
     ]);
     // New notes, minus earlier digests; reminders due within the coming week and not done.
     const notes = recentNotes.filter((note) => !note.tags.includes('digest'));
+    // A reminder needs a real due date to count as due; an undated one is a
+    // to-do without a deadline, and created_at would make it look due at birth.
     const remindersDue = reminderNotes
-      .filter((note) => !note.tags.includes('done') && (note.occurredAt ?? note.createdAt) <= now + 7 * MS_PER_DAY)
+      .filter((note) => !note.tags.includes('done') && note.occurredAt !== undefined && note.occurredAt <= now + 7 * MS_PER_DAY)
       .sort((a, b) => (a.occurredAt ?? a.createdAt) - (b.occurredAt ?? b.createdAt));
 
     if (!conversations.length && !notes.length && !remindersDue.length) {

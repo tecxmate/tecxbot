@@ -28,6 +28,9 @@
     <h1>🎙️ Audio → Text</h1>
     <p class="sub">上傳檔案，轉好的文字會自動傳回你的 Telegram 對話。<br />Upload a file; the transcript is sent back to your Telegram chat.</p>
 
+    <label for="secret">存取金鑰 / Access secret</label>
+    <input type="password" id="secret" placeholder="TRANSCRIBE_SECRET — 只存在這個瀏覽器 / stored in this browser only" autocomplete="off" />
+
     <label for="language">語言 / Language</label>
     <select id="language">
       <option value="zh-TW">中文 (zh-TW)</option>
@@ -52,6 +55,10 @@
     const bar = document.getElementById('bar');
     const barFill = bar.querySelector('div');
     const goBtn = document.getElementById('go');
+    const secretEl = document.getElementById('secret');
+
+    // Remember the secret on this device only (same key the /transcribe.html page uses).
+    try { const saved = localStorage.getItem('transcribe_secret'); if (saved) secretEl.value = saved; } catch (_) {}
 
     function setStatus(msg, kind) {
       statusEl.textContent = msg;
@@ -92,7 +99,10 @@
     goBtn.addEventListener('click', async () => {
       const file = document.getElementById('file').files[0];
       const language = document.getElementById('language').value;
+      const secret = secretEl.value.trim();
+      if (!secret) return setStatus('請先輸入存取金鑰。 Enter the access secret first.', 'error');
       if (!file) return setStatus('請先選擇檔案。 Please choose a file.', 'error');
+      try { localStorage.setItem('transcribe_secret', secret); } catch (_) {}
 
       goBtn.disabled = true;
       resultEl.style.display = 'none';
@@ -101,16 +111,18 @@
 
       try {
         setStatus('取得轉錄金鑰… Getting token…');
-        const tokenRes = await fetch('/api/deepgram-token', { method: 'POST' });
-        if (!tokenRes.ok) throw new Error('Token mint failed: ' + (await tokenRes.text()));
-        const { key } = await tokenRes.json();
+        // /api/deepgram-token is secret-gated and now returns a temporary JWT
+        // ({token, scheme}) used as `Bearer <token>`, not a `Token <key>` API key.
+        const tokenRes = await fetch('/api/deepgram-token', { method: 'POST', headers: { Authorization: 'Bearer ' + secret } });
+        if (!tokenRes.ok) throw new Error('Token request failed: ' + tokenRes.status + ' ' + (await tokenRes.text()));
+        const { token: dgToken, scheme } = await tokenRes.json();
 
         setStatus('上傳並轉錄中… Uploading & transcribing…');
         const dgParams = new URLSearchParams({ model: 'nova-3', punctuate: 'true', smart_format: 'true' });
         dgParams.set('language', language === 'auto' ? 'multi' : language);
         const dgText = await postWithProgress(
           'https://api.deepgram.com/v1/listen?' + dgParams.toString(),
-          { Authorization: 'Token ' + key, 'Content-Type': deepgramContentType(file) },
+          { Authorization: (scheme || 'Bearer') + ' ' + dgToken, 'Content-Type': deepgramContentType(file) },
           file
         );
         const dg = JSON.parse(dgText);
