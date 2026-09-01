@@ -13,6 +13,7 @@ import { buildDailyOpsReport } from '../src/ops/companyOps.js';
 import { getOpsConfig } from '../src/ops/config.js';
 import { listConversations, pruneOlderThan, storeBackend } from '../src/core/conversationStore.js';
 import { listNotes, saveNote } from '../src/core/noteStore.js';
+import { pushInternalNotice } from '../src/connector/reply.js';
 import { archivePendingMedia } from '../src/connector/media.js';
 import { isR2Configured } from '../src/core/r2.js';
 import { getDueBriefReminders, markBriefReminderSent } from '../src/core/personalProfileStore.js';
@@ -23,7 +24,7 @@ import { pushLineMessage } from '../src/platforms/line/client.js';
 // The reminder sweep is the slow one; it sets the ceiling for all jobs.
 export const config = { maxDuration: 300 };
 
-const JOBS = ['line-reminders', 'ops-daily-report', 'connector-prune', 'archive-media', 'weekly-digest'] as const;
+const JOBS = ['line-reminders', 'ops-daily-report', 'connector-prune', 'archive-media', 'weekly-digest', 'daily-brief'] as const;
 type Job = (typeof JOBS)[number];
 
 const DEFAULT_RETENTION_DAYS = 90;
@@ -46,7 +47,80 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (job === 'connector-prune') return runConnectorPrune(req, res);
   if (job === 'archive-media') return runArchiveMedia(req, res);
   if (job === 'weekly-digest') return runWeeklyDigest(req, res);
+  if (job === 'daily-brief') return runDailyBrief(req, res);
   return runOpsDailyReport(req, res);
+}
+
+// Daily reminder brief — the push half of the reminder convention. Notes tagged
+// "reminder" whose occurred_at is the due time, not yet tagged "done", get pushed
+// once a morning to an internal LINE group.
+//
+// Fail-closed and quota-frugal by design:
+//  - No CONNECTOR_BRIEF_CONVERSATION_ID → the job does nothing at all.
+//  - Nothing due → no push, so a quiet week spends zero LINE quota.
+//  - The push goes through pushInternalNotice, sharing the PM reply monthly cap
+//    and its counter, so briefs can never overrun the budget unseen.
+async function runDailyBrief(req: VercelRequest, res: VercelResponse) {
+  const briefConversationId = process.env.CONNECTOR_BRIEF_CONVERSATION_ID?.trim();
+  if (!briefConversationId) {
+    return res.status(200).json({ ok: true, job: 'daily-brief', skipped: 'no CONNECTOR_BRIEF_CONVERSATION_ID configured (fail-closed: set it to an internal LINE group id to enable)' });
+  }
+  // Two different tenants, deliberately. Notes are saved under the note tenant
+  // (same fallback chain save_note uses), but captured LINE conversations are
+  // stored under the *channel's* tenant — so the push target must be looked up
+  // the way the connector's own tools do (pinned tenant, or unfiltered), not
+  // with the notes' 'demo' fallback, or it would never resolve.
+  const noteTenantId = process.env.CONNECTOR_TENANT_ID?.trim() || process.env.DEFAULT_TENANT_ID?.trim() || 'demo';
+  const conversationTenantId = process.env.CONNECTOR_TENANT_ID?.trim() || undefined;
+  const now = Date.now();
+  // Due = at or before the end of today (UTC). `?days=` looks further ahead.
+  const lookaheadDays = Math.min(30, Math.max(0, Number(firstQueryValue(req.query.days)) || 0));
+  const endOfToday = Math.floor(now / MS_PER_DAY) * MS_PER_DAY + MS_PER_DAY - 1 + lookaheadDays * MS_PER_DAY;
+  const LIMIT = 200;
+
+  try {
+    const reminders = await listNotes({ tenantId: noteTenantId, tag: 'reminder', until: endOfToday, limit: LIMIT });
+    // A reminder needs a real due date. occurred_at is optional on save_note, and
+    // falling back to created_at would make every undated note due the moment it
+    // is created — and "overdue" forever after, pushing every single day. That
+    // would quietly spend ~30 LINE pushes a month and break the promise that a
+    // quiet week costs zero quota.
+    const due = reminders
+      .filter((note) => !note.tags.includes('done') && note.occurredAt !== undefined && note.occurredAt <= endOfToday)
+      .sort((a, b) => (a.occurredAt ?? a.createdAt) - (b.occurredAt ?? b.createdAt));
+
+    if (!due.length) {
+      // Silence is the feature: nothing due means nothing pushed and no quota spent.
+      return res.status(200).json({ ok: true, job: 'daily-brief', due: 0, pushed: false, skipped: 'nothing due' });
+    }
+
+    const startOfToday = Math.floor(now / MS_PER_DAY) * MS_PER_DAY;
+    const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+    const lines = due.map((note) => {
+      const at = note.occurredAt ?? note.createdAt;
+      const marker = at < startOfToday ? `⚠️ overdue ${day(at)}` : `due ${day(at)}`;
+      return `• ${note.title}${note.project ? ` (${note.project})` : ''} — ${marker}`;
+    });
+    const text = [
+      `🗓 Reminders — ${day(now)}`,
+      '',
+      ...lines,
+      '',
+      'Ask Claude to mark one done, or open it with get_note.',
+    ].join('\n');
+
+    // No silent caps: say so when the row limit may have hidden older reminders.
+    const truncated = reminders.length >= LIMIT;
+    const outcome = await pushInternalNotice({ conversationId: briefConversationId, text, tenantId: conversationTenantId });
+    if (!outcome.ok) {
+      // over_cap is an expected, benign outcome — report it rather than 500.
+      return res.status(200).json({ ok: true, job: 'daily-brief', due: due.length, truncated, pushed: false, reason: outcome.reason, used: outcome.used, cap: outcome.cap });
+    }
+    return res.status(200).json({ ok: true, job: 'daily-brief', due: due.length, truncated, pushed: true, to: outcome.conversationId, at: outcome.at });
+  } catch (error) {
+    console.error('[cron:daily-brief] Failed:', error);
+    return res.status(500).json({ ok: false, job: 'daily-brief', error: formatError(error) });
+  }
 }
 
 // Weekly project digest — a mechanical index of the week, filed into project

@@ -63,6 +63,13 @@ export type ListNotesQuery = {
   tag?: string;
   participant?: string;
   since?: number;
+  /**
+   * Only notes at or before this time (by occurred_at, falling back to
+   * created_at). Setting it also flips the ordering to OLDEST first — a
+   * due-date query wants the most overdue items, and the row cap must trim the
+   * least-overdue tail rather than the head.
+   */
+  until?: number;
   limit?: number;
 };
 
@@ -134,7 +141,7 @@ export async function updateNote(id: string, patch: UpdateNoteInput): Promise<No
 
 export async function listNotes(query: ListNotesQuery = {}): Promise<Note[]> {
   const limit = clamp(query.limit ?? 25, 1, 200);
-  const candidates = await candidateNotes(query.tenantId, query.project, query.since, 500);
+  const candidates = await candidateNotes(query.tenantId, query.project, query.since, 500, query.until);
   return refine(candidates, query).slice(0, limit);
 }
 
@@ -150,7 +157,10 @@ export async function searchNotes(query: SearchNotesQuery): Promise<Note[]> {
 
 // ---- shared filtering ----
 
-async function candidateNotes(tenantId: string | undefined, project: string | undefined, since: number | undefined, cap: number): Promise<Note[]> {
+async function candidateNotes(tenantId: string | undefined, project: string | undefined, since: number | undefined, cap: number, until?: number): Promise<Note[]> {
+  // A bounded `until` query is a due-date lookup: order oldest-first so the row
+  // cap drops the least-overdue notes instead of the most overdue ones.
+  const oldestFirst = until !== undefined;
   if (isSqlConfigured()) {
     await ensureSchema();
     const where: string[] = [];
@@ -158,17 +168,23 @@ async function candidateNotes(tenantId: string | undefined, project: string | un
     if (tenantId) { params.push(tenantId); where.push(`tenant_id = $${params.length}`); }
     if (project) { params.push(project); where.push(`project = $${params.length}`); }
     if (since !== undefined) { params.push(since); where.push(`coalesce(occurred_at, created_at) >= $${params.length}`); }
+    if (until !== undefined) { params.push(until); where.push(`coalesce(occurred_at, created_at) <= $${params.length}`); }
     params.push(cap);
     const clause = where.length ? `where ${where.join(' and ')}` : '';
     const rows = await sql<Record<string, unknown>>(
-      `select * from connector_notes ${clause} order by coalesce(occurred_at, created_at) desc limit $${params.length}`,
+      `select * from connector_notes ${clause} order by coalesce(occurred_at, created_at) ${oldestFirst ? 'asc' : 'desc'} limit $${params.length}`,
       params,
     );
     return rows.map(toNote);
   }
   return [...memoryNotes.values()]
-    .filter((note) => (!tenantId || note.tenantId === tenantId) && (!project || note.project === project) && (since === undefined || (note.occurredAt ?? note.createdAt) >= since))
-    .sort((a, b) => (b.occurredAt ?? b.createdAt) - (a.occurredAt ?? a.createdAt))
+    .filter((note) => (!tenantId || note.tenantId === tenantId)
+      && (!project || note.project === project)
+      && (since === undefined || (note.occurredAt ?? note.createdAt) >= since)
+      && (until === undefined || (note.occurredAt ?? note.createdAt) <= until))
+    .sort((a, b) => oldestFirst
+      ? (a.occurredAt ?? a.createdAt) - (b.occurredAt ?? b.createdAt)
+      : (b.occurredAt ?? b.createdAt) - (a.occurredAt ?? a.createdAt))
     .slice(0, cap);
 }
 

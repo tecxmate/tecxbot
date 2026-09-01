@@ -39,7 +39,7 @@ function buildInstructions(): string {
     '',
     'Memory conventions (follow these so every teammate\'s Claude finds the same things):',
     '- Decisions: when the operator records a decision, save_note it with tag "decision" (and the project). "What did we decide about X?" is then search_notes/list_notes tag=decision.',
-    '- Reminders: a note tagged "reminder" with occurred_at set to the DUE time is a follow-up. Complete one by adding the tag "done" via update_note. Weekly digests list reminders coming due.',
+    '- Reminders: a note tagged "reminder" with occurred_at set to the DUE time is a follow-up. ALWAYS set occurred_at when saving one — an undated reminder is never pushed in the daily brief. Complete one by adding the tag "done" via update_note. Weekly digests list reminders coming due.',
     '- Living brief: each project keeps one note titled "<project> — brief" as its current state. Update it in place with update_note when things change, rather than piling up new notes.',
     '- Jira: when a note relates to a Jira issue, include the issue key (e.g. "TECX-42") as a tag, so memory and Jira cross-reference.',
     '- Digests: a weekly cron files an activity index tagged "digest" (conversations, new notes, due reminders). When asked "what happened this week", start from the latest digest note and expand it.',
