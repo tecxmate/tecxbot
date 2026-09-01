@@ -43,9 +43,14 @@ tasks, and the reasoning happens in the operator's own Claude.
   `connector_status`, `list_notes`, `search_notes`, `get_note`,
   `project_status`; write: `save_note`, `update_note`. (`send_line_reply`
   appears only when enabled — §4.)
-- **9 serverless functions** — comfortably under the Hobby cap of 12. Stripe,
+- **10 serverless functions** — comfortably under the Hobby cap of 12. Stripe,
   stock-chart, and the marketing landing page were removed; `/` serves a minimal
   holding page.
+- **`GET /api/export`** — dumps project memory and captured conversations as
+  markdown or JSON, gated by the same `CONNECTOR_TOKEN`. Nothing extra to
+  configure; it works wherever the connector already does. The escape hatch that
+  keeps the memory from being locked to this deployment — see
+  `docs/claude-connector.md` §13.
 
 ### Production env already set (in Vercel, not in the repo)
 - `CONNECTOR_TOKEN` — gates `/api/mcp` (fails closed without it).

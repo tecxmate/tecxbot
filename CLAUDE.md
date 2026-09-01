@@ -66,6 +66,13 @@ A weekly cron files an activity index tagged `digest`; a daily one pushes due
 reminders to the internal group. Recordings go in at `/transcribe.html` (any
 length) and land in the same memory. See `docs/claude-connector.md` §11.
 
+Three recurring jobs are set up as recipes (`docs/claude-connector.md` §12) —
+**untracked commitments** (what we promised in chat that has no Jira issue or
+reminder), the **weekly client update draft**, and **meeting → Jira** with the
+issue key tagged back onto the transcript note. `GET /api/export` (§13) dumps
+the whole memory as markdown or JSON, so none of it is locked to this
+deployment.
+
 > If your client work lives in a **different** repository, copy this
 > "Client conversation context" section into that repo's `CLAUDE.md` — a
 > `CLAUDE.md` only takes effect for Claude Code sessions run inside its own

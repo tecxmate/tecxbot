@@ -43,6 +43,7 @@ const metaEndpoint = (await import(`${DIST}/api/facebook-webhook.js`)).default;
 const cronEndpoint = (await import(`${DIST}/api/cron.js`)).default;
 const transcribeEndpoint = (await import(`${DIST}/api/transcribe.js`)).default;
 const deepgramTokenEndpoint = (await import(`${DIST}/api/deepgram-token.js`)).default;
+const exportEndpoint = (await import(`${DIST}/api/export.js`)).default;
 const { createHmac } = await import('node:crypto');
 
 // ---- harness ----
@@ -215,6 +216,19 @@ await test('initialize echoes a supported protocol version', async () => {
   assertEqual(result.serverInfo.name, 'tecxbot-client-context', 'server name');
   assert(result.capabilities.tools, 'declares the tools capability');
   assert(result.instructions.length > 0, 'ships instructions');
+});
+
+await test('instructions carry the working recipes and their guard rails', async () => {
+  const { instructions } = await rpc('initialize', {});
+  // These three recipes exist ONLY as instructions — there is no tool that
+  // enforces them — so this is the only thing standing between the convention
+  // and it quietly disappearing in an edit.
+  assertIncludes(instructions, 'Untracked commitments', 'commitment-gap recipe');
+  assertIncludes(instructions, 'never invent a commitment', 'and its no-fabrication rule');
+  assertIncludes(instructions, 'Weekly client update', 'client update recipe');
+  assertIncludes(instructions, 'DRAFT in this chat', 'which stays a draft rather than a push');
+  assertIncludes(instructions, 'Meeting transcript -> Jira', 'meeting-to-Jira recipe');
+  assertIncludes(instructions, 'add_tags of every issue key', 'the cross-reference that project_status reads');
 });
 
 await test('an unsupported protocol version falls back to the default', async () => {
@@ -1415,6 +1429,110 @@ await test('deepgram-token reports a missing Deepgram key after auth', async () 
   assertEqual(r.code, 500, 'reports unconfigured Deepgram after passing auth');
   if (previous !== undefined) process.env.DEEPGRAM_API_KEY = previous;
   delete process.env.TRANSCRIBE_SECRET;
+});
+
+// ---- export endpoint (portable memory) ----
+// The whole point is that the memory is not locked to this deployment, so these
+// cover the auth gate and that both renderings actually carry the data.
+
+console.log('\nexport endpoint');
+
+/** A Vercel-shaped req/res pair for endpoints that read a parsed query only. */
+async function plainHttpCall(endpoint, { method = 'GET', headers = {}, query = {} } = {}) {
+  const state = { code: 0, headers: {}, body: undefined };
+  const res = {
+    setHeader: (key, value) => { state.headers[key.toLowerCase()] = value; },
+    status(code) { state.code = code; return res; },
+    json(payload) { state.body = payload; return res; },
+    send(payload) { state.body = payload; return res; },
+    end() { return res; },
+  };
+  await endpoint({ method, headers, query, body: undefined }, res);
+  return state;
+}
+
+await test('export rejects methods other than GET/POST', async () => {
+  const r = await plainHttpCall(exportEndpoint, { method: 'DELETE', query: { key: 'smoke-token' } });
+  assertEqual(r.code, 405, 'method not allowed');
+});
+
+await test('export fails closed with no CONNECTOR_TOKEN, and rejects a wrong one', async () => {
+  const previous = process.env.CONNECTOR_TOKEN;
+  delete process.env.CONNECTOR_TOKEN;
+  const disabled = await plainHttpCall(exportEndpoint, { query: { key: 'anything' } });
+  assertEqual(disabled.code, 503, 'disabled rather than open when unconfigured');
+  process.env.CONNECTOR_TOKEN = previous;
+  const wrong = await plainHttpCall(exportEndpoint, { headers: { authorization: 'Bearer wrong' } });
+  assertEqual(wrong.code, 401, 'wrong token rejected');
+  const missing = await plainHttpCall(exportEndpoint, {});
+  assertEqual(missing.code, 401, 'no credentials rejected');
+});
+
+await test('export renders notes as markdown with their metadata', async () => {
+  const r = await plainHttpCall(exportEndpoint, { headers: { authorization: 'Bearer smoke-token' }, query: { project: 'ogsm-demo' } });
+  assertEqual(r.code, 200, 'ok');
+  assertEqual(r.headers['content-type'], 'text/markdown; charset=utf-8', 'served as markdown');
+  assertIncludes(r.headers['content-disposition'], 'attachment', 'offered as a file, not rendered inline');
+  assertIncludes(r.body, '# Tecxbot export', 'has a document heading');
+  assertIncludes(r.body, 'building the booster', 'note body is exported, not just the title');
+  assertIncludes(r.body, '- tags: decision', 'tags survive the export — they are the whole filing system');
+  assert(!r.body.includes('redemption-code'), 'project= filter excludes other projects');
+});
+
+await test('export defaults to notes only; include=all adds the conversations', async () => {
+  const auth = { headers: { authorization: 'Bearer smoke-token' } };
+  const notesOnly = await plainHttpCall(exportEndpoint, auth);
+  assert(!notesOnly.body.includes('revised quote'), 'conversations are not exported by default');
+  const all = await plainHttpCall(exportEndpoint, { ...auth, query: { include: 'all' } });
+  assertIncludes(all.body, 'revised quote', 'include=all carries the captured messages');
+  assertIncludes(all.body, '**Ken**', 'messages are attributed to their sender');
+  const conversationsOnly = await plainHttpCall(exportEndpoint, { ...auth, query: { include: 'conversations' } });
+  assertIncludes(conversationsOnly.body, 'revised quote', 'conversations still present');
+  assert(!conversationsOnly.body.includes('Project memory'), 'notes omitted when only conversations were asked for');
+});
+
+await test('export format=json returns the same data with counts', async () => {
+  const r = await plainHttpCall(exportEndpoint, {
+    headers: { authorization: 'Bearer smoke-token' },
+    query: { format: 'json', include: 'all' },
+  });
+  assertEqual(r.code, 200, 'ok');
+  assert(Array.isArray(r.body.notes) && r.body.notes.length > 0, 'notes array');
+  assertEqual(r.body.counts.notes, r.body.notes.length, 'note count matches the payload');
+  const messages = r.body.conversations.reduce((sum, item) => sum + item.messages.length, 0);
+  assertEqual(r.body.counts.messages, messages, 'message count matches the payload');
+  assert(r.body.conversations.some((item) => item.conversation.conversationId === ACME), 'the captured group is in there');
+});
+
+await test('export rejects an unknown format or include rather than guessing', async () => {
+  const auth = { headers: { authorization: 'Bearer smoke-token' } };
+  const badFormat = await plainHttpCall(exportEndpoint, { ...auth, query: { format: 'csv' } });
+  assertEqual(badFormat.code, 400, 'unknown format rejected');
+  const badInclude = await plainHttpCall(exportEndpoint, { ...auth, query: { include: 'everything' } });
+  assertEqual(badInclude.code, 400, 'unknown include rejected');
+});
+
+await test('export limit= is clamped, so a huge or junk value cannot blow up the query', async () => {
+  const auth = { headers: { authorization: 'Bearer smoke-token' } };
+  const huge = await plainHttpCall(exportEndpoint, { ...auth, query: { format: 'json', limit: '999999' } });
+  assertEqual(huge.body.filters.limit, 1000, 'clamped to the maximum');
+  const junk = await plainHttpCall(exportEndpoint, { ...auth, query: { format: 'json', limit: 'abc' } });
+  assertEqual(junk.body.filters.limit, 200, 'unparseable falls back to the default');
+  const one = await plainHttpCall(exportEndpoint, { ...auth, query: { format: 'json', limit: '1' } });
+  assertEqual(one.body.notes.length, 1, 'a real limit is honoured');
+});
+
+await test('export since= looks BACKWARD, matching the connector', async () => {
+  const auth = { headers: { authorization: 'Bearer smoke-token' } };
+  await callTool('save_note', { title: 'Exported just now', body: 'x', occurred_at: new Date().toISOString() });
+  const recent = await plainHttpCall(exportEndpoint, { ...auth, query: { format: 'json', since: '1d' } });
+  const titles = recent.body.notes.map((n) => n.title);
+  // A note stamped *now* is the assertion that pins the direction: it only
+  // qualifies if since subtracts (now - 1d). If it added like `until` does
+  // (now + 1d) this note would fall outside the window, so a reversed bound
+  // fails here. The 2020 note covers the other side.
+  assert(titles.includes('Exported just now'), 'a note from this moment is inside a 1-day backward window');
+  assert(!titles.includes('Due soon'), 'a 2020 note is outside it');
 });
 
 // ---- postgres query shape ----

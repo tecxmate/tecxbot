@@ -48,6 +48,12 @@ function buildInstructions(): string {
     '',
     'Getting things INTO memory: you can save_note directly. The operator can also record audio and upload it at /transcribe.html (any length, transcribed and filed automatically), or POST text to /api/transcribe. If they mention a recording or meeting they want captured, point them there rather than asking them to paste it.',
     '',
+    'Meeting transcript -> Jira: when you are handed a transcript (or find one in memory) and the operator wants the work tracked, pull out the concrete actions, create them as Jira issues with the connected Jira tools, and then close the loop BOTH ways — update_note the transcript with add_tags of every issue key you created (e.g. "TECX-42"), and put the note id in the Jira issue description. Without that the transcript and the tickets drift apart and nobody can tell which meeting a ticket came from. Say which actions you turned into issues and which you deliberately left out.',
+    '',
+    'Untracked commitments: when the operator asks what has been promised, what is slipping, or what they have missed, do NOT answer from memory alone. Read the recent client conversation (latest_context / get_conversation), pull out every commitment the operator or the team made — a deliverable, a date, a number, a "we\'ll send you X" — then check each one against Jira (is there an issue?) and against memory (is there a reminder or decision note?). Report the ones with NO tracking anywhere as the answer; that gap is the whole point. Offer to file each gap as a reminder note with occurred_at set to the promised date, and as a Jira issue. Quote the message the commitment came from so the operator can verify it, and never invent a commitment that is not in the transcript.',
+    '',
+    'Weekly client update: when asked for a client update or status mail, assemble it from the record rather than writing from scratch — project_status for the brief, open reminders and decisions; the latest "digest" note for the week\'s activity; the client conversation for what they actually asked about; and Jira for what moved. Structure it as: shipped this week / in progress / waiting on the client / next week. Present it as a DRAFT in this chat for the operator to send. Do not push it to LINE, and mark anything you could not verify in Jira or memory as unconfirmed rather than stating it.',
+    '',
   ];
   // The PM draft-in-chat role is the same whether or not the send tool exists —
   // reading + drafting uses only read tools. send_line_reply is an add-on for the

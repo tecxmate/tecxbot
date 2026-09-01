@@ -222,6 +222,7 @@ alive. Nothing configured in a dashboard or scheduler needs to change.
 | `/api/ops-daily-report` | `api/cron.ts?job=ops-daily-report` | |
 | (schedule directly) | `api/cron.ts?job=connector-prune` | Retention sweep; no legacy URL |
 | (schedule directly) | `api/cron.ts?job=archive-media` | Archives media to R2; no legacy URL |
+| `/api/export` | `api/export.ts` | Portable markdown/JSON dump of memory (§13); same token as the connector |
 
 ## 8. A note on trust
 
@@ -407,3 +408,89 @@ It is deliberately frugal:
 
 Run it on demand with `GET /api/cron?job=daily-brief&secret=<CRON_SECRET>`
 (`?days=N` looks N days ahead).
+
+## 12. Working recipes
+
+Three things the connector is now explicitly set up to do. They need no new
+tools — they are conventions plus instructions baked into the MCP `instructions`
+string, so any teammate's Claude does them the same way. Ask for them in plain
+words; the phrasing below is just what reliably triggers each one.
+
+### Untracked commitments — "what have we promised and not tracked?"
+
+The failure mode this catches: a promise made in chat ("we'll have the revised
+quote to you Thursday") that never became a Jira issue or a reminder, and so
+exists only in a transcript nobody re-reads.
+
+Claude reads the recent client conversation, extracts every commitment made by
+your side — a deliverable, a date, a number, a "we'll send you X" — then checks
+each one against Jira and against project memory. **What it reports is the
+gap**: commitments with no issue and no reminder. Each one comes with the
+message it came from, so you can verify it rather than trust it, and Claude
+offers to file it as a `reminder` note (`occurred_at` = the promised date, so the
+daily brief picks it up) and as a Jira issue.
+
+It will not invent a commitment that is not in the transcript. If it cannot find
+one, that is the answer.
+
+### Weekly client update — "draft this week's update for <client>"
+
+Assembled from the record, not written from imagination:
+
+| Source | Supplies |
+| --- | --- |
+| `project_status` | living brief, open reminders, recent decisions |
+| latest `digest` note | what actually happened this week |
+| the client conversation | what the client asked about |
+| Jira | what moved, and what is still open |
+
+Structured as *shipped this week / in progress / waiting on you / next week*,
+and delivered as a **draft in the Claude chat** for you to send — so it costs no
+LINE quota and nothing reaches a client unread. Anything Claude could not verify
+in Jira or memory is marked unconfirmed rather than asserted.
+
+### Meeting → Jira, cross-referenced both ways
+
+When a transcript turns into tickets, the link is recorded in **both**
+directions:
+
+- the transcript note gets `add_tags` of every issue key created (`TECX-42`), so
+  `list_notes tag=TECX-42` and `project_status`'s `jiraKeys` find the meeting the
+  ticket came from;
+- the Jira issue description carries the note id, so the ticket points back at
+  the transcript.
+
+That is the convention `project_status` already reads — it extracts Jira keys
+from note tags — so following it is what makes a project's tickets and its
+meeting history one picture instead of two. Claude also says which actions it
+turned into issues and which it left out, so the omissions are visible.
+
+## 13. Export — the memory is yours
+
+`GET /api/export` turns everything captured into portable files. The point is
+that project memory is **not locked to this deployment**: one request gives you
+markdown you can keep in a repo, grep, diff, or hand to something else entirely.
+
+Authenticated with the connector's own token, because it exposes exactly the
+same data the connector does:
+
+```
+curl -H "Authorization: Bearer $CONNECTOR_TOKEN" \
+  "https://<deployment>/api/export?include=all&format=md" -o memory.md
+```
+
+| Query | Default | Meaning |
+| --- | --- | --- |
+| `include` | `notes` | `notes`, `conversations`, or `all` |
+| `format` | `md` | `md` (a readable document) or `json` (round-trippable) |
+| `project` | — | restrict notes to one project |
+| `since` | — | `7d` / `30d` / an ISO date — looks **backward**, like the connector's `since` |
+| `limit` | `200` | notes (and conversations) returned, capped at 1000 |
+| `messages` | `500` | messages per conversation, capped at 5000 |
+
+`?key=<token>` works too, for anything that can only take a URL. Markdown comes
+back as a file download (`Content-Disposition: attachment`); JSON carries the
+same data plus `counts`, so a truncated export is obvious rather than silent.
+
+A monthly `curl` into a private repo is a reasonable backup: the export is plain
+text, so `git diff` shows exactly what changed in the project's memory.
