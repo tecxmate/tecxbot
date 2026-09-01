@@ -762,8 +762,10 @@ await test('weekly-digest files an activity index into project memory', async ()
 });
 
 await test('weekly-digest surfaces due reminders and skips completed ones', async () => {
-  await callTool('save_note', { title: 'Chase the invoice', body: 'Follow up with Richard on the Q3 invoice.', tags: ['reminder'] });
-  const doneNote = await callTool('save_note', { title: 'Old chore', body: 'Already handled.', tags: ['reminder', 'done'] });
+  // occurred_at is the DUE date, and it is required to count as due — an undated
+  // reminder is a to-do without a deadline (see the daily-brief tests).
+  await callTool('save_note', { title: 'Chase the invoice', body: 'Follow up with Richard on the Q3 invoice.', tags: ['reminder'], occurred_at: '2020-06-01T00:00:00Z' });
+  const doneNote = await callTool('save_note', { title: 'Old chore', body: 'Already handled.', tags: ['reminder', 'done'], occurred_at: '2020-06-02T00:00:00Z' });
   assert(doneNote.structuredContent.id, 'seeded a completed reminder');
   const response = await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'weekly-digest', secret: 'cron-secret' } });
   assertEqual(response.code, 200, 'status');
@@ -775,6 +777,13 @@ await test('weekly-digest surfaces due reminders and skips completed ones', asyn
   const remindersSection = body.slice(body.indexOf('## Reminders due'));
   assertIncludes(remindersSection, 'Chase the invoice', 'due reminder listed in the digest');
   assert(!remindersSection.includes('Old chore'), 'completed reminder not listed as due');
+  // An undated reminder is not "due" — it must not appear in that section.
+  await callTool('save_note', { title: 'Undated digest item', body: 'No deadline.', tags: ['reminder'] });
+  const after = await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'weekly-digest', secret: 'cron-secret' } });
+  assertEqual(after.code, 200, 'second digest run');
+  const latest = await callTool('list_notes', { tag: 'digest', limit: 1 });
+  const body2 = (await callTool('get_note', { note_id: latest.structuredContent.notes[0].id })).structuredContent.body;
+  assert(!body2.slice(body2.indexOf('## Reminders due')).includes('Undated digest item'), 'undated reminder is not counted as due');
 });
 
 await test('daily-brief fails closed with no brief conversation configured', async () => {
