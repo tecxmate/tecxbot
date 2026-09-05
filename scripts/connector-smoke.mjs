@@ -46,6 +46,7 @@ const deepgramTokenEndpoint = (await import(`${DIST}/api/deepgram-token.js`)).de
 const exportEndpoint = (await import(`${DIST}/api/export.js`)).default;
 const { connectorTools } = await import(`${DIST}/src/connector/tools.js`);
 const { JOBS: CRON_JOBS } = await import(`${DIST}/api/cron.js`);
+const { readFile, readdir } = await import('node:fs/promises');
 const { createHmac } = await import('node:crypto');
 
 // ---- harness ----
@@ -1537,6 +1538,64 @@ await test('export since= looks BACKWARD, matching the connector', async () => {
   assert(!titles.includes('Due soon'), 'a 2020 note is outside it');
 });
 
+// ---- env hygiene ----
+// .env.example is split into a secrets half and a configuration half, because
+// only ~30 of its ~99 variables are credentials and the other ~69 are ids,
+// model names and flags. Keeping the halves apart is what makes the credential
+// inventory small enough to hand to a secrets manager. These guard the split.
+
+console.log('\nenv hygiene');
+
+const envExample = await readFile('.env.example', 'utf8');
+const SECRET_BLOCK = /# --- secrets:start ---([\s\S]*?)# --- secrets:end ---/;
+
+await test('.env.example declares a delimited secrets block', async () => {
+  const block = envExample.match(SECRET_BLOCK);
+  assert(block, 'the secrets block is present');
+  const names = [...block[1].matchAll(/^([A-Z0-9_]+)=/gm)].map((match) => match[1]);
+  assert(names.length >= 25, `the block holds the credential set (found ${names.length})`);
+  assert(names.includes('CONNECTOR_TOKEN'), 'including the connector token');
+  assert(names.includes('CONNECTOR_DATABASE_URL'), 'and the database url, whose password is inline');
+});
+
+await test('no credential-shaped variable hides in the configuration half', async () => {
+  // The split only means something if a credential cannot drift back across it.
+  // Allowlisted: names that match the pattern but hold no secret value.
+  const NOT_SECRET = new Set([
+    'TELEGRAM_WEBHOOK_URL', 'LINE_WEBHOOK_URL', 'FB_WEBHOOK_URL',
+    'DEFAULT_LINE_CHANNEL_ID', 'WHATSAPP_CHANNEL_ID', 'GOOGLE_TASKS_LIST_ID',
+    'WHATSAPP_PHONE_NUMBER_ID', 'FB_OPS_SUMMARY_RECIPIENT_ID', 'LINEAR_TEAM_ID',
+    'LINEAR_PROJECT_ID', 'LINEAR_LABEL_IDS', 'LINEAR_DEFAULT_ASSIGNEE_ID',
+    'TECXMATE_OWNER_USER_IDS', 'CLAUDE_ASSISTANT_OWNER_USER_IDS',
+    'MCP_AGENT_WRITE_USER_IDS', 'CONNECTOR_REPLY_CONVERSATION_IDS',
+    'CONNECTOR_REVIEW_CONVERSATION_ID', 'CONNECTOR_BRIEF_CONVERSATION_ID',
+    'CLAUDE_ASSISTANT_CONTEXT_CONVERSATION_ID', 'CONNECTOR_TENANT_ID',
+    'WHATSAPP_TENANT_ID', 'DEFAULT_TENANT_ID', 'R2_ACCOUNT_ID',
+  ]);
+  const configHalf = envExample.slice(envExample.indexOf('# --- secrets:end ---'));
+  const suspicious = [...configHalf.matchAll(/^([A-Z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD)[A-Z0-9_]*)=/gm)]
+    .map((match) => match[1])
+    .filter((name) => !NOT_SECRET.has(name));
+  assertEqual(suspicious.join(',') || '(none)', '(none)', 'credentials stay above the secrets:end marker');
+});
+
+await test('every variable the code reads is declared in .env.example', async () => {
+  // Catches the other drift direction: a new env var wired into the code but
+  // never written down, which is how undocumented configuration accumulates.
+  const declared = new Set([...envExample.matchAll(/^([A-Z0-9_]+)=/gm)].map((match) => match[1]));
+  const sources = [];
+  for (const dir of ['src/core', 'src/connector', 'api']) {
+    for (const name of await readdir(dir)) {
+      if (name.endsWith('.ts')) sources.push(await readFile(`${dir}/${name}`, 'utf8'));
+    }
+  }
+  const used = new Set([...sources.join('\n').matchAll(/process\.env\.([A-Z0-9_]+)/g)].map((match) => match[1]));
+  // NODE_ENV and the smoke suite's own hooks are ambient, not configuration.
+  for (const ambient of ['NODE_ENV', 'SMOKE_DIST', 'VERCEL', 'VERCEL_ENV', 'VERCEL_URL']) used.delete(ambient);
+  const undeclared = [...used].filter((name) => !declared.has(name));
+  assertEqual(undeclared.join(',') || '(none)', '(none)', 'no variable is read without being documented');
+});
+
 // ---- docs currency ----
 // docs/tutorial.md documents the whole surface, and documentation rots. These
 // pin its three reference tables to the code, so shipping a tool, endpoint or
@@ -1546,7 +1605,6 @@ await test('export since= looks BACKWARD, matching the connector', async () => {
 
 console.log('\ndocs currency');
 
-const { readFile, readdir } = await import('node:fs/promises');
 const TUTORIAL = 'docs/tutorial.md';
 const tutorial = await readFile(TUTORIAL, 'utf8');
 
