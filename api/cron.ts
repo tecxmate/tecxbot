@@ -290,10 +290,17 @@ async function runOpsDailyReport(req: VercelRequest, res: VercelResponse) {
 
 // With no CRON_SECRET set this stays open outside production and closes in it,
 // so an unconfigured deployment cannot be triggered by anyone who finds the URL.
+// Both sides are trimmed, like /api/transcribe and authorizeConnector. A secret
+// pasted into a hosting dashboard easily picks up a trailing newline, and an
+// untrimmed compare turns that into a 401 that looks exactly like a wrong
+// secret — with every scheduled job silently failing behind it.
 function isAuthorized(req: VercelRequest) {
-  const secret = process.env.CRON_SECRET;
+  const secret = process.env.CRON_SECRET?.trim();
   if (!secret) return process.env.VERCEL_ENV !== 'production';
-  return req.headers.authorization === `Bearer ${secret}` || firstQueryValue(req.query.secret) === secret;
+  const auth = req.headers.authorization;
+  const bearer = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : undefined;
+  const provided = bearer || firstQueryValue(req.query.secret)?.trim();
+  return typeof provided === 'string' && provided === secret;
 }
 
 function firstQueryValue(value: string | string[] | undefined) {
