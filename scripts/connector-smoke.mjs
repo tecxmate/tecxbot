@@ -500,6 +500,20 @@ await test('the cron secret is required, via header or query', async () => {
   assertEqual((await rawHttpCall(cronEndpoint, { method: 'GET', headers: { authorization: 'Bearer cron-secret' }, query: { job: 'line-reminders' } })).code, 200, 'bearer header');
 });
 
+await test('the cron secret tolerates whitespace on either side', async () => {
+  // A trailing newline on the value in the hosting dashboard would otherwise
+  // 401 every scheduled job, looking exactly like a wrong secret.
+  process.env.CRON_SECRET = 'cron-secret\n';
+  try {
+    assertEqual((await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'line-reminders', secret: 'cron-secret' } })).code, 200, 'padded env secret');
+    assertEqual((await rawHttpCall(cronEndpoint, { method: 'GET', headers: { authorization: 'Bearer cron-secret ' }, query: { job: 'line-reminders' } })).code, 200, 'padded bearer header');
+    assertEqual((await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'line-reminders', secret: 'wrong' } })).code, 401, 'still rejects a wrong secret');
+  } finally {
+    // Restore even on failure, or the padded value leaks into every later test.
+    process.env.CRON_SECRET = 'cron-secret';
+  }
+});
+
 await test('the line-reminders job runs and reports what was due', async () => {
   const response = await rawHttpCall(cronEndpoint, { method: 'GET', query: { job: 'line-reminders', secret: 'cron-secret' } });
   assertEqual(response.body.ok, true, 'ok');
