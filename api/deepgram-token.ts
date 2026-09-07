@@ -41,15 +41,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 }
 
+// Both sides are trimmed, matching /api/transcribe and authorizeConnector. A
+// secret pasted into a hosting dashboard easily picks up a trailing newline,
+// and comparing raw bytes turns that into a 401 indistinguishable from a wrong
+// secret — the lengths differ, so the check fails before comparing content.
 function isAuthorized(req: VercelRequest): boolean {
-  const secret = process.env.TRANSCRIBE_SECRET;
+  const secret = process.env.TRANSCRIBE_SECRET?.trim();
   if (!secret) return false; // fail closed: no secret set means the endpoint is disabled
   const auth = req.headers.authorization;
   const key = req.query.key;
   const fromQuery = Array.isArray(key) ? key[0] : key;
   const provided = (typeof fromQuery === 'string' && fromQuery.trim())
     ? fromQuery.trim()
-    : (typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : undefined);
+    : (typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : undefined);
   if (typeof provided !== 'string') return false;
   const a = Buffer.from(provided);
   const b = Buffer.from(secret);

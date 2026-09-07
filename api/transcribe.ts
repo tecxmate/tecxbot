@@ -119,12 +119,16 @@ function coerceList(value: unknown): string[] | undefined {
   return undefined;
 }
 
+// Both sides are trimmed, the way authorizeConnector does it. A secret pasted
+// into a hosting dashboard easily picks up a trailing newline, and comparing raw
+// bytes turns that into a 401 that looks identical to a wrong secret — the
+// lengths differ, so the check fails before it compares any content.
 function isAuthorized(req: VercelRequest): boolean {
-  const secret = process.env.TRANSCRIBE_SECRET;
+  const secret = process.env.TRANSCRIBE_SECRET?.trim();
   if (!secret) return false; // fail closed: no secret set means the endpoint is disabled
   const auth = req.headers.authorization;
   const provided = firstQuery(req.query.key)
-    ?? (typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : undefined);
+    ?? (typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : undefined);
   return typeof provided === 'string' && constantTimeEquals(provided, secret);
 }
 

@@ -1389,6 +1389,21 @@ await test('transcribe save-only mode rejects a JSON body with no text', async (
   delete process.env.TRANSCRIBE_SECRET;
 });
 
+await test('transcribe tolerates whitespace around the configured secret', async () => {
+  // The real failure this guards against: a secret pasted into a hosting
+  // dashboard arrives with a trailing newline, the byte compare sees two
+  // different lengths, and every request 401s exactly as if the secret were
+  // wrong — with nothing in the response to tell the two apart.
+  process.env.TRANSCRIBE_SECRET = 'stt-secret\n';
+  const r = await rawHttpCall(transcribeEndpoint, {
+    method: 'POST',
+    headers: { authorization: 'Bearer stt-secret', 'content-type': 'application/json' },
+    rawBody: JSON.stringify({ text: 'a padded secret still authenticates' }),
+  });
+  assertEqual(r.code, 200, 'padded env secret still authenticates');
+  delete process.env.TRANSCRIBE_SECRET;
+});
+
 await test('transcribe save-only mode requires auth like the audio path', async () => {
   process.env.TRANSCRIBE_SECRET = 'stt-secret';
   const r = await rawHttpCall(transcribeEndpoint, {
@@ -1430,6 +1445,19 @@ await test('deepgram-token reports a missing Deepgram key after auth', async () 
   delete process.env.DEEPGRAM_API_KEY;
   const r = await rawHttpCall(deepgramTokenEndpoint, { method: 'POST', query: { key: 'stt-secret' } });
   assertEqual(r.code, 500, 'reports unconfigured Deepgram after passing auth');
+  if (previous !== undefined) process.env.DEEPGRAM_API_KEY = previous;
+  delete process.env.TRANSCRIBE_SECRET;
+});
+
+await test('deepgram-token tolerates whitespace on the presented secret', async () => {
+  // The other half of the same trim: a Bearer header copied by hand can carry a
+  // trailing space. 500 (not 401) means the request cleared the auth gate and
+  // failed later, on the unconfigured Deepgram key.
+  process.env.TRANSCRIBE_SECRET = 'stt-secret';
+  const previous = process.env.DEEPGRAM_API_KEY;
+  delete process.env.DEEPGRAM_API_KEY;
+  const r = await rawHttpCall(deepgramTokenEndpoint, { method: 'POST', headers: { authorization: 'Bearer stt-secret ' } });
+  assertEqual(r.code, 500, 'padded presented secret still authenticates');
   if (previous !== undefined) process.env.DEEPGRAM_API_KEY = previous;
   delete process.env.TRANSCRIBE_SECRET;
 });
