@@ -13,6 +13,11 @@ serves them to Claude over MCP. See `docs/claude-connector.md`.
 records what is live, what is built but dormant (Cloudflare R2 media, Claude-in-
 LINE), and the exact remaining setup steps.
 
+**Commercialising it?** `docs/commercialisation.md` — the customer-deployed
+architecture, the gap against Claude ↔ Slack, Taiwan's PDPA, and an honest read
+on LINE's own roadmap. Its central finding: LINE shipped LINE OA AI Mode and
+Agent i Biz in mid-2026, so the platform window is now, not later.
+
 **How the system is used** is `docs/tutorial.md`. Its §9 reference tables are
 machine-checked: `npm test` compares them against `connectorTools`, the files in
 `api/`, and the cron dispatcher's `JOBS`. **If you add a tool, endpoint, or cron
