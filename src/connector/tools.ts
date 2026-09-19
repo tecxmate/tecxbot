@@ -478,7 +478,7 @@ export const connectorTools: ToolDefinition[] = [
       const body = readString(args.body);
       if (!title || !body) throw new Error('title and body are required.');
       const note = await saveNote({
-        tenantId: enforcedTenant(args.tenant_id) ?? DEFAULT_NOTE_TENANT,
+        tenantId: enforcedTenant(args.tenant_id) ?? defaultNoteTenant(),
         title,
         body,
         project: readString(args.project),
@@ -893,7 +893,12 @@ function serializeMessage(message: StoredMessage) {
 
 // ---- project-memory helpers ----
 
-const DEFAULT_NOTE_TENANT = process.env.CONNECTOR_TENANT_ID?.trim() || process.env.DEFAULT_TENANT_ID?.trim() || 'demo';
+// Read at call time, not at import: on Workers the environment is only
+// populated inside a request, so a module-level constant would freeze the
+// fallback 'demo' in place and file every note under the wrong tenant.
+function defaultNoteTenant(): string {
+  return process.env.CONNECTOR_TENANT_ID?.trim() || process.env.DEFAULT_TENANT_ID?.trim() || 'demo';
+}
 
 function sinceProperty2(description: string) {
   return { type: 'string', description };

@@ -10,7 +10,9 @@
 // Everything runs on the in-memory store — no database, no network, no
 // credentials — so it is safe to run anywhere, including CI.
 
-// Must be set before the first import: tenantStore reads env at module load.
+// Set before the first import out of habit and clarity. The tenant registry is
+// lazy now (it must be, to work on Workers), so ordering is no longer load-
+// bearing — "the tenant registry reads the environment lazily" pins that.
 process.env.WHATSAPP_PHONE_NUMBER_ID = '123456';
 process.env.DEFAULT_TENANT_ID = 'demo';
 // Most meta-webhook cases send unsigned payloads for convenience; the endpoint
@@ -32,6 +34,7 @@ const { handleMcpMessage } = await import(`${DIST}/src/connector/mcpServer.js`);
 const { handleWhatsappWebhook } = await import(`${DIST}/src/platforms/whatsapp/webhook.js`);
 const { authorizeConnector } = await import(`${DIST}/src/connector/auth.js`);
 const { resolveSqlEndpoint, prepareParam } = await import(`${DIST}/src/core/sql.js`);
+const { listConnectorChannels, resetTenantRegistry } = await import(`${DIST}/src/core/tenantStore.js`);
 const { decideAssistant, buildAssistantPrompt } = await import(`${DIST}/src/botSystems/claudeAssistant.js`);
 const { handleTecxmateLineEvent, isTecxmateCaptureOnly } = await import(`${DIST}/src/botSystems/tecxmate.js`);
 const { decideFileRendering, fileNameFromPlaceholder } = await import(`${DIST}/src/connector/fileKind.js`);
@@ -533,6 +536,28 @@ await test('an unconfigured deployment closes the cron endpoint in production', 
 // ---- units ----
 
 console.log('\nunits');
+
+await test('the tenant registry reads the environment lazily', async () => {
+  // This is what makes the code runnable on Cloudflare Workers, where bindings
+  // and secrets only reach process.env inside a request — never while modules
+  // are being evaluated. Configure a channel AFTER import and it must still be
+  // picked up; a registry built at import time would never see it.
+  const before = listConnectorChannels().map((channel) => channel.id);
+  assert(!before.includes('vn-teacher'), 'the Vietnamy channel is not configured yet');
+
+  process.env.VN_LINE_CHANNEL_ACCESS_TOKEN = 'vn-token-set-after-import';
+  try {
+    resetTenantRegistry();
+    const after = listConnectorChannels().map((channel) => channel.id);
+    assert(after.includes('vn-teacher'), 'a channel configured after import is registered');
+  } finally {
+    delete process.env.VN_LINE_CHANNEL_ACCESS_TOKEN;
+    resetTenantRegistry(); // restore the registry the rest of the suite expects
+  }
+
+  const restored = listConnectorChannels().map((channel) => channel.id);
+  assert(!restored.includes('vn-teacher'), 'the registry is back to its original shape');
+});
 
 await test('authorizeConnector accepts both credential styles and rejects the rest', async () => {
   assertEqual(authorizeConnector({ authorization: 'Bearer smoke-token' }).ok, true, 'bearer');
