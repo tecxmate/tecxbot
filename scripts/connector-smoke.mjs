@@ -35,6 +35,9 @@ const { handleWhatsappWebhook } = await import(`${DIST}/src/platforms/whatsapp/w
 const { authorizeConnector } = await import(`${DIST}/src/connector/auth.js`);
 const { resolveSqlEndpoint, prepareParam } = await import(`${DIST}/src/core/sql.js`);
 const { listConnectorChannels, resetTenantRegistry } = await import(`${DIST}/src/core/tenantStore.js`);
+const { runVercelHandler, buildQuery } = await import(`${DIST}/src/worker/adapter.js`);
+const { ROUTES, matchRoute } = await import(`${DIST}/src/worker/router.js`);
+const { CRON_SCHEDULE, default: worker } = await import(`${DIST}/src/worker/index.js`);
 const { decideAssistant, buildAssistantPrompt } = await import(`${DIST}/src/botSystems/claudeAssistant.js`);
 const { handleTecxmateLineEvent, isTecxmateCaptureOnly } = await import(`${DIST}/src/botSystems/tecxmate.js`);
 const { decideFileRendering, fileNameFromPlaceholder } = await import(`${DIST}/src/connector/fileKind.js`);
@@ -1708,6 +1711,166 @@ await test('every api/ endpoint is documented, and every documented endpoint exi
 
 await test('every cron job is documented, and every documented job exists', async () => {
   assertSameSet(documented('job-table'), new Set(CRON_JOBS), 'job table');
+});
+
+// ---- cloudflare worker ----
+// The adapter is the one piece of this port that could be wrong on its own: the
+// handlers and their tests moved platforms unchanged, so nothing else would
+// notice if the Fetch translation dropped a header, a query param, or a body.
+
+console.log('\ncloudflare worker');
+
+/** Both-directions set comparison, so neither half can silently drift. */
+function assertSameMembers(actual, expected, label) {
+  const missing = [...expected].filter((item) => !actual.has(item));
+  const extra = [...actual].filter((item) => !expected.has(item));
+  const problems = [
+    missing.length ? `missing: ${missing.join(', ')}` : '',
+    extra.length ? `unexpected: ${extra.join(', ')}` : '',
+  ].filter(Boolean);
+  assert(problems.length === 0, `${label} — ${problems.join('; ')}`);
+}
+
+await test('query parsing matches Vercel: repeated keys become arrays', async () => {
+  const query = buildQuery(new URL('https://x.test/api/cron?job=a&tag=one&tag=two'));
+  assertEqual(query.job, 'a', 'single value is a string');
+  assert(Array.isArray(query.tag) && query.tag.length === 2, 'repeated key is an array');
+});
+
+await test('a route-pinned query parameter cannot be overridden by the caller', async () => {
+  // /api/daily-brief pins job=daily-brief. If a caller could pass ?job=... and
+  // win, one public path would run any job — exactly what the rewrite existed
+  // to prevent.
+  const query = buildQuery(new URL('https://x.test/api/daily-brief?job=archive-media'), { job: 'daily-brief' });
+  assertEqual(query.job, 'daily-brief', 'the route wins');
+});
+
+await test('the adapter gives raw bytes to handlers that read the body as a stream', async () => {
+  // The three bodyParser:false handlers verify signatures over the exact
+  // payload, so a re-serialized copy would fail every signature check.
+  let seen = '';
+  const handler = async (req, res) => {
+    for await (const chunk of req) seen += new TextDecoder().decode(chunk);
+    res.status(200).json({ ok: true });
+  };
+  const body = '{"spacing":"  preserved  "}';
+  await runVercelHandler(handler, new Request('https://x.test/api/line-webhook', { method: 'POST', body }));
+  assertEqual(seen, body, 'byte-for-byte');
+});
+
+await test('the adapter also parses the body for handlers that read req.body', async () => {
+  let seen;
+  const handler = async (req, res) => { seen = req.body; res.status(200).json({ ok: true }); };
+  await runVercelHandler(handler, new Request('https://x.test/api/mcp', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ method: 'tools/list' }),
+  }));
+  assertEqual(seen?.method, 'tools/list', 'parsed JSON');
+});
+
+await test('status, headers and method survive the translation', async () => {
+  const handler = async (req, res) => {
+    res.setHeader('x-custom', 'value');
+    res.status(418).json({ method: req.method, auth: req.headers.authorization });
+  };
+  const response = await runVercelHandler(handler, new Request('https://x.test/api/export', {
+    method: 'GET',
+    headers: { authorization: 'Bearer tok' },
+  }));
+  assertEqual(response.status, 418, 'status');
+  assertEqual(response.headers.get('x-custom'), 'value', 'custom header');
+  const payload = await response.json();
+  assertEqual(payload.method, 'GET', 'method');
+  assertEqual(payload.auth, 'Bearer tok', 'header reached the handler');
+});
+
+await test('a 204 carries no body, which fetch requires', async () => {
+  const handler = async (_req, res) => res.status(204).end();
+  const response = await runVercelHandler(handler, new Request('https://x.test/api/telegram-deliver', { method: 'POST' }));
+  assertEqual(response.status, 204, 'status');
+  assertEqual(await response.text(), '', 'empty body');
+});
+
+await test('a handler that throws becomes a 500 instead of killing the isolate', async () => {
+  const handler = async () => { throw new Error('boom: secret detail'); };
+  const response = await runVercelHandler(handler, new Request('https://x.test/api/mcp', { method: 'POST' }));
+  assertEqual(response.status, 500, 'status');
+  const text = await response.text();
+  assert(!text.includes('secret detail'), 'internal error text is not leaked to the caller');
+});
+
+await test('every api/ endpoint is routed, and every route points at a real endpoint', async () => {
+  const files = await readdir('api');
+  const endpoints = new Set(files.filter((name) => name.endsWith('.ts')).map((name) => name.replace(/\.ts$/, '')));
+  const routed = new Set(Object.values(ROUTES).map((route) => route.endpoint));
+  assertSameMembers(routed, endpoints, 'worker routes vs api/ files');
+});
+
+await test('the cron rewrites Vercel served still resolve', async () => {
+  for (const [path, job] of Object.entries({
+    '/api/line-reminders': 'line-reminders',
+    '/api/ops-daily-report': 'ops-daily-report',
+    '/api/archive-media': 'archive-media',
+    '/api/weekly-digest': 'weekly-digest',
+    '/api/daily-brief': 'daily-brief',
+  })) {
+    const route = matchRoute(path);
+    assert(route, `${path} is routed`);
+    assertEqual(route.endpoint, 'cron', `${path} runs the cron dispatcher`);
+    assertEqual(route.query?.job, job, `${path} pins job=${job}`);
+  }
+  assertEqual(matchRoute('/api/whatsapp-webhook')?.endpoint, 'facebook-webhook', 'the WhatsApp alias survives');
+  assertEqual(matchRoute('/api/mcp/')?.endpoint, 'mcp', 'a trailing slash still matches');
+});
+
+await test('every cron trigger runs a job, and every job has a trigger', async () => {
+  // A trigger with no job fires into nothing; a job with no trigger never runs.
+  // Both are silent for weeks, so the two files are compared directly.
+  const toml = await readFile('wrangler.toml', 'utf8');
+  const block = toml.match(/crons\s*=\s*\[([\s\S]*?)\]/);
+  assert(block, 'wrangler.toml declares crons');
+  const declared = new Set([...block[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]));
+  assertSameMembers(declared, new Set(Object.keys(CRON_SCHEDULE)), 'wrangler.toml crons vs CRON_SCHEDULE');
+  for (const job of Object.values(CRON_SCHEDULE)) {
+    assert(CRON_JOBS.includes(job), `${job} is a real cron job`);
+  }
+});
+
+await test('the worker 404s an unknown path instead of guessing', async () => {
+  const response = await worker.fetch(new Request('https://x.test/api/nope'));
+  assertEqual(response.status, 404, 'not found');
+});
+
+await test('routing, adapter and handler compose end to end', async () => {
+  // /api/export is gated by CONNECTOR_TOKEN, so an unauthenticated call proves
+  // the request reached the real handler and its real auth.
+  const previous = process.env.CONNECTOR_TOKEN;
+  process.env.CONNECTOR_TOKEN = 'export-token';
+  try {
+    const denied = await worker.fetch(new Request('https://x.test/api/export'));
+    assertEqual(denied.status, 401, 'no credentials rejected');
+    const allowed = await worker.fetch(new Request('https://x.test/api/export?format=json&include=notes&key=export-token'));
+    assertEqual(allowed.status, 200, 'valid token accepted');
+  } finally {
+    if (previous === undefined) delete process.env.CONNECTOR_TOKEN;
+    else process.env.CONNECTOR_TOKEN = previous;
+  }
+});
+
+await test('cron fails closed on Workers when CRON_SECRET is unset', async () => {
+  // On Vercel this was keyed on VERCEL_ENV, which does not exist on Workers —
+  // so without DEPLOY_ENV an unset secret would leave every job public.
+  const previousSecret = process.env.CRON_SECRET;
+  delete process.env.CRON_SECRET;
+  process.env.DEPLOY_ENV = 'production';
+  try {
+    const response = await worker.fetch(new Request('https://x.test/api/daily-brief'));
+    assertEqual(response.status, 401, 'production without a secret is refused');
+  } finally {
+    delete process.env.DEPLOY_ENV;
+    if (previousSecret !== undefined) process.env.CRON_SECRET = previousSecret;
+  }
 });
 
 // ---- postgres query shape ----

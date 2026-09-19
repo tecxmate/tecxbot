@@ -290,13 +290,27 @@ async function runOpsDailyReport(req: VercelRequest, res: VercelResponse) {
 
 // With no CRON_SECRET set this stays open outside production and closes in it,
 // so an unconfigured deployment cannot be triggered by anyone who finds the URL.
+/**
+ * Is this a production deployment?
+ *
+ * Has to be answerable on both platforms. VERCEL_ENV exists only on Vercel, so
+ * a Worker deploy with no CRON_SECRET would read as "not production" and leave
+ * every scheduled job callable by anyone who guesses the URL. DEPLOY_ENV is set
+ * in wrangler.toml and covers the Workers side; either one naming production is
+ * enough to close the door.
+ */
+function isProductionDeploy(): boolean {
+  const env = (process.env.DEPLOY_ENV || process.env.VERCEL_ENV || '').trim().toLowerCase();
+  return env === 'production';
+}
+
 // Both sides are trimmed, like /api/transcribe and authorizeConnector. A secret
 // pasted into a hosting dashboard easily picks up a trailing newline, and an
 // untrimmed compare turns that into a 401 that looks exactly like a wrong
 // secret — with every scheduled job silently failing behind it.
 function isAuthorized(req: VercelRequest) {
   const secret = process.env.CRON_SECRET?.trim();
-  if (!secret) return process.env.VERCEL_ENV !== 'production';
+  if (!secret) return !isProductionDeploy();
   const auth = req.headers.authorization;
   const bearer = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice('Bearer '.length).trim() : undefined;
   const provided = bearer || firstQueryValue(req.query.secret)?.trim();
