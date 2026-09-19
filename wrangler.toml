@@ -1,0 +1,42 @@
+# Cloudflare Workers deployment.
+#
+# Deploy with `npm run deploy` — that compiles to dist/ first, because `main`
+# below points at built JavaScript rather than TypeScript. The source uses
+# NodeNext-style `.js` import specifiers, which resolve cleanly against real
+# emitted files and would need bundler-specific handling otherwise.
+
+name = "tecxbot"
+main = "dist/src/worker/index.js"
+
+# Past 2026-08-04, so nodejs_compat is on by default (node:crypto, Buffer), and
+# past 2025-04-01, so vars and secrets are populated into process.env — which is
+# what lets every api/ and src/ module keep reading process.env unchanged.
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[observability]
+enabled = true
+
+# public/ is served directly by Workers Assets. Assets are matched before the
+# Worker runs, so /transcribe.html and / never reach the router.
+[assets]
+directory = "./public"
+
+[vars]
+# Names this deployment as production so api/cron.ts fails closed when
+# CRON_SECRET is missing. On Vercel that job was done by VERCEL_ENV, which does
+# not exist here — without this, an unset secret would leave every scheduled job
+# callable by anyone.
+DEPLOY_ENV = "production"
+
+# Must stay in step with CRON_SCHEDULE in src/worker/index.ts; the smoke suite
+# compares the two and fails if a trigger has no job or a job has no trigger.
+[triggers]
+crons = [
+  "*/15 * * * *",  # archive-media — LINE expires media quickly
+  "0 22 * * 0",    # weekly-digest — Sunday 22:00 UTC
+  "0 23 * * *",    # daily-brief  — 23:00 UTC = 07:00 Taipei
+]
+
+# Everything else is a secret, set with `wrangler secret put <NAME>` rather than
+# written here. The full list lives in .env.example under the secrets marker.

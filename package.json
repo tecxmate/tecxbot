@@ -5,15 +5,18 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "build:worker": "tsc -p tsconfig.json --noEmit false --outDir dist",
     "test": "tsc -p tsconfig.json --noEmit false --outDir dist && node scripts/connector-smoke.mjs",
+    "deploy": "npm run build:worker && wrangler deploy",
+    "worker:dev": "npm run build:worker && wrangler dev",
     "line:set-webhook": "node scripts/line-set-webhook.mjs",
     "line:set-rich-menu": "node scripts/line-set-rich-menu.mjs",
     "telegram:set-webhook": "node --env-file=.env scripts/telegram-set-webhook.mjs",
     "dev": "vercel dev"
   },
-  "dependencies": {},
   "devDependencies": {
     "@vercel/node": "^5.7.12",
-    "typescript": "~5.9.3"
+    "typescript": "~5.9.3",
+    "wrangler": "^4.135.0"
   }
 }
