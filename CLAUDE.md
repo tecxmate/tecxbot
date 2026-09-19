@@ -13,6 +13,11 @@ serves them to Claude over MCP. See `docs/claude-connector.md`.
 records what is live, what is built but dormant (Cloudflare R2 media, Claude-in-
 LINE), and the exact remaining setup steps.
 
+**Moving it to Cloudflare?** `docs/cloudflare.md` — the Workers port (a Fetch
+adapter, so the `api/` handlers are unchanged and still run on Vercel), and the
+cutover runbook. The LINE webhook is switched last: LINE delivers each message
+once, so any gap loses client messages permanently.
+
 **Commercialising it?** `docs/commercialisation.md` — the customer-deployed
 architecture, the gap against Claude ↔ Slack, Taiwan's PDPA, and an honest read
 on LINE's own roadmap. Its central finding: LINE shipped LINE OA AI Mode and
