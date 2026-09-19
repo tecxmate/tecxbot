@@ -1753,7 +1753,11 @@ await test('the adapter gives raw bytes to handlers that read the body as a stre
     for await (const chunk of req) seen += new TextDecoder().decode(chunk);
     res.status(200).json({ ok: true });
   };
-  const body = '{"spacing":"  preserved  "}';
+  // Whitespace between tokens is deliberate: this payload does NOT survive a
+  // JSON round-trip, so an adapter that re-serialized instead of passing the
+  // original bytes would fail here — which is exactly how a signature check
+  // starts rejecting every genuine webhook.
+  const body = '{ "spacing" : "  preserved  " }';
   await runVercelHandler(handler, new Request('https://x.test/api/line-webhook', { method: 'POST', body }));
   assertEqual(seen, body, 'byte-for-byte');
 });
