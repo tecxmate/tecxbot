@@ -9,6 +9,7 @@
     "test": "tsc -p tsconfig.json --noEmit false --outDir dist && node scripts/connector-smoke.mjs",
     "deploy": "npm run build:worker && wrangler deploy",
     "worker:dev": "npm run build:worker && wrangler dev",
+    "seed:demo": "npm run build:worker && node scripts/seed-demo.mjs",
     "line:set-webhook": "node scripts/line-set-webhook.mjs",
     "line:set-rich-menu": "node scripts/line-set-rich-menu.mjs",
     "telegram:set-webhook": "node --env-file=.env scripts/telegram-set-webhook.mjs",
