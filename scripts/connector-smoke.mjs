@@ -1877,6 +1877,37 @@ await test('cron fails closed on Workers when CRON_SECRET is unset', async () =>
   }
 });
 
+// ---- demo seed guards ----
+// scripts/seed-demo.mjs writes invented conversations into a database. The one
+// failure it must never have is writing them into the live client log, so the
+// guards are tested rather than trusted.
+
+console.log('\ndemo seed guards');
+
+const { spawnSync } = await import('node:child_process');
+
+function runSeed(env) {
+  return spawnSync(process.execPath, ['scripts/seed-demo.mjs', '--yes'], {
+    env: { ...process.env, CONNECTOR_DATABASE_URL: '', DATABASE_URL: '', DEMO_DATABASE_URL: '', ...env },
+    encoding: 'utf8',
+  });
+}
+
+await test('seeding refuses to run without an explicit demo database', async () => {
+  const result = runSeed({});
+  assertEqual(result.status, 1, 'exits non-zero');
+  assertIncludes(result.stderr, 'never guesses', 'says why');
+});
+
+await test('seeding refuses when the demo database is the live one', async () => {
+  const url = 'postgres://user:pass@host/db';
+  for (const name of ['CONNECTOR_DATABASE_URL', 'DATABASE_URL']) {
+    const result = runSeed({ DEMO_DATABASE_URL: url, [name]: url });
+    assertEqual(result.status, 1, `exits non-zero when DEMO_DATABASE_URL equals ${name}`);
+    assertIncludes(result.stderr, 'Refusing to seed', 'says why');
+  }
+});
+
 // ---- postgres query shape ----
 // Every other test runs on the in-memory store, so the SQL the production path
 // actually emits was never executed. This repo has already been bitten by that
