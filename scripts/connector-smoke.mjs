@@ -28,7 +28,7 @@ delete process.env.CONNECTOR_TIMEZONE;
 const { resolve } = await import('node:path');
 const { pathToFileURL } = await import('node:url');
 const DIST = pathToFileURL(resolve(process.env.SMOKE_DIST || 'dist')).href;
-const { recordMessage, buildConversationId, pruneOlderThan, listUnarchivedMedia, setMediaKey } = await import(`${DIST}/src/core/conversationStore.js`);
+const { recordMessage, buildConversationId, pruneOlderThan, listUnarchivedMedia, setMediaKey, getMessages, listConversations } = await import(`${DIST}/src/core/conversationStore.js`);
 const { signRequest } = await import(`${DIST}/src/core/r2.js`);
 const { handleMcpMessage } = await import(`${DIST}/src/connector/mcpServer.js`);
 const { handleWhatsappWebhook } = await import(`${DIST}/src/platforms/whatsapp/webhook.js`);
@@ -50,6 +50,8 @@ const cronEndpoint = (await import(`${DIST}/api/cron.js`)).default;
 const transcribeEndpoint = (await import(`${DIST}/api/transcribe.js`)).default;
 const deepgramTokenEndpoint = (await import(`${DIST}/api/deepgram-token.js`)).default;
 const exportEndpoint = (await import(`${DIST}/api/export.js`)).default;
+const discordIngestEndpoint = (await import(`${DIST}/api/discord-ingest.js`)).default;
+const { renderDiscordMessage, discordSenderName } = await import(`${DIST}/src/platforms/discord/ingest.js`);
 const { connectorTools } = await import(`${DIST}/src/connector/tools.js`);
 const { JOBS: CRON_JOBS } = await import(`${DIST}/api/cron.js`);
 const { readFile, readdir } = await import('node:fs/promises');
@@ -1874,6 +1876,145 @@ await test('cron fails closed on Workers when CRON_SECRET is unset', async () =>
   } finally {
     delete process.env.DEPLOY_ENV;
     if (previousSecret !== undefined) process.env.CRON_SECRET = previousSecret;
+  }
+});
+
+// ---- discord capture ----
+// Discord only delivers messages over a Gateway WebSocket, so a listener
+// outside the deployment forwards them here. That makes /api/discord-ingest a
+// write path into the client log reachable by anyone who can reach the URL —
+// hence the auth tests first.
+
+console.log('\ndiscord capture');
+
+await test('discord ingest rejects non-POST', async () => {
+  const r = await rawHttpCall(discordIngestEndpoint, { method: 'GET' });
+  assertEqual(r.code, 405, 'method not allowed');
+});
+
+await test('discord ingest fails closed without a secret', async () => {
+  delete process.env.DISCORD_INGEST_SECRET;
+  const r = await rawHttpCall(discordIngestEndpoint, {
+    method: 'POST',
+    headers: { authorization: 'Bearer anything', 'content-type': 'application/json' },
+    rawBody: JSON.stringify({ messages: [] }),
+  });
+  assertEqual(r.code, 401, 'unauthorized when no secret is configured');
+});
+
+await test('discord ingest rejects a wrong secret', async () => {
+  process.env.DISCORD_INGEST_SECRET = 'discord-secret';
+  const r = await rawHttpCall(discordIngestEndpoint, {
+    method: 'POST',
+    headers: { authorization: 'Bearer wrong', 'content-type': 'application/json' },
+    rawBody: JSON.stringify({ messages: [] }),
+  });
+  assertEqual(r.code, 401, 'wrong secret rejected');
+  delete process.env.DISCORD_INGEST_SECRET;
+});
+
+await test('discord ingest tolerates whitespace on the configured secret', async () => {
+  process.env.DISCORD_INGEST_SECRET = 'discord-secret\n';
+  const r = await rawHttpCall(discordIngestEndpoint, {
+    method: 'POST',
+    headers: { authorization: 'Bearer discord-secret', 'content-type': 'application/json' },
+    rawBody: JSON.stringify({ messages: [] }),
+  });
+  assertEqual(r.code, 200, 'padded env secret still authenticates');
+  delete process.env.DISCORD_INGEST_SECRET;
+});
+
+await test('discord ingest rejects a body with no messages array', async () => {
+  process.env.DISCORD_INGEST_SECRET = 'discord-secret';
+  const r = await rawHttpCall(discordIngestEndpoint, {
+    method: 'POST',
+    headers: { authorization: 'Bearer discord-secret', 'content-type': 'application/json' },
+    rawBody: JSON.stringify({ channelName: 'general' }),
+  });
+  assertEqual(r.code, 400, 'malformed body rejected');
+  delete process.env.DISCORD_INGEST_SECRET;
+});
+
+await test('discord ingest refuses an oversized batch rather than working through it', async () => {
+  process.env.DISCORD_INGEST_SECRET = 'discord-secret';
+  const messages = Array.from({ length: 201 }, (_, index) => ({ id: String(index), channel_id: 'c1', author: { id: 'u1' }, content: 'x' }));
+  const r = await rawHttpCall(discordIngestEndpoint, {
+    method: 'POST',
+    headers: { authorization: 'Bearer discord-secret', 'content-type': 'application/json' },
+    rawBody: JSON.stringify({ messages }),
+  });
+  assertEqual(r.code, 413, 'batch cap enforced');
+  delete process.env.DISCORD_INGEST_SECRET;
+});
+
+await test('bot messages and system notices are not captured', async () => {
+  // Other people's bots (CI, polls, music) would bury the human conversation
+  // the memory exists to hold; joins and pins are not conversation at all.
+  assertEqual(renderDiscordMessage({ id: '1', channel_id: 'c', author: { id: 'b', bot: true }, content: 'build passed' }), undefined, 'bot skipped');
+  assertEqual(renderDiscordMessage({ id: '2', channel_id: 'c', author: { id: 'u' }, content: 'joined', type: 7 }), undefined, 'system type skipped');
+  assertEqual(renderDiscordMessage({ id: '3', channel_id: 'c', author: { id: 'u' }, content: '' }), undefined, 'empty message skipped');
+  assertEqual(renderDiscordMessage({ id: '4', channel_id: 'c', author: { id: 'u' }, content: 'real question' }), 'real question', 'human message kept');
+  assertEqual(renderDiscordMessage({ id: '5', channel_id: 'c', author: { id: 'u' }, content: 'reply', type: 19 }), 'reply', 'replies kept');
+});
+
+await test('attachments are described rather than dropped', async () => {
+  // A message that is only a screenshot still matters to the transcript.
+  assertEqual(
+    renderDiscordMessage({ id: '1', channel_id: 'c', author: { id: 'u' }, attachments: [{ id: 'a', filename: 'shot.png', content_type: 'image/png' }] }),
+    '[image]',
+    'image-only message',
+  );
+  assertEqual(
+    renderDiscordMessage({ id: '2', channel_id: 'c', author: { id: 'u' }, content: 'see this', attachments: [{ id: 'a', filename: 'spec.pdf', content_type: 'application/pdf' }] }),
+    'see this\n[file: spec.pdf]',
+    'text plus attachment',
+  );
+});
+
+await test('the display name falls back through what Discord actually sends', async () => {
+  assertEqual(discordSenderName({ id: '1', channel_id: 'c', author: { id: 'u', global_name: 'Niko', username: 'nikolas' } }), 'Niko', 'global name preferred');
+  assertEqual(discordSenderName({ id: '2', channel_id: 'c', author: { id: 'u', username: 'nikolas' } }), 'nikolas', 'username next');
+  assertEqual(discordSenderName({ id: '3', channel_id: 'c', author: { id: 'u123' } }), 'u123', 'id as a last resort');
+});
+
+await test('captured discord messages land in the store with the right direction', async () => {
+  // Discord has no inbound/outbound split — without this the transcript reads
+  // as if the client said everything, and the update draft gets it backwards.
+  process.env.DISCORD_INGEST_SECRET = 'discord-secret';
+  process.env.DISCORD_TENANT_ID = 'demo';
+  process.env.DISCORD_OPERATOR_USER_IDS = 'operator-1';
+  resetTenantRegistry();
+  try {
+    const r = await rawHttpCall(discordIngestEndpoint, {
+      method: 'POST',
+      headers: { authorization: 'Bearer discord-secret', 'content-type': 'application/json' },
+      rawBody: JSON.stringify({
+        channelName: 'project-lotus',
+        guildName: 'Tecxmate',
+        messages: [
+          { id: 'd1', channel_id: 'chan-1', guild_id: 'g1', author: { id: 'client-1', global_name: 'Client' }, content: 'can we move the deadline?', timestamp: '2026-10-01T09:00:00.000Z' },
+          { id: 'd2', channel_id: 'chan-1', guild_id: 'g1', author: { id: 'operator-1', global_name: 'Niko' }, content: 'yes, to the 20th', timestamp: '2026-10-01T09:05:00.000Z' },
+        ],
+      }),
+    });
+    assertEqual(r.code, 200, 'accepted');
+    assertEqual(r.body.captured, 2, 'both captured');
+
+    const conversationId = 'discord:default-discord:group:chan-1';
+    const stored = await getMessages({ conversationId, tenantId: 'demo', limit: 10 });
+    assertEqual(stored.length, 2, 'both stored');
+    const byId = Object.fromEntries(stored.map((message) => [message.externalMessageId, message]));
+    assertEqual(byId.d1.direction, 'inbound', 'the client is inbound');
+    assertEqual(byId.d2.direction, 'outbound', 'the operator is outbound');
+    assertEqual(byId.d1.senderName, 'Client', 'sender name kept');
+
+    const conversations = await listConversations({ tenantId: 'demo', platform: 'discord', since: 'all' });
+    assertEqual(conversations[0]?.title, 'Tecxmate — #project-lotus', 'readable title');
+  } finally {
+    delete process.env.DISCORD_INGEST_SECRET;
+    delete process.env.DISCORD_TENANT_ID;
+    delete process.env.DISCORD_OPERATOR_USER_IDS;
+    resetTenantRegistry();
   }
 });
 

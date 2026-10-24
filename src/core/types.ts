@@ -1,4 +1,4 @@
-export type Platform = 'line' | 'facebook' | 'telegram' | 'whatsapp' | 'zalo' | 'web';
+export type Platform = 'line' | 'facebook' | 'telegram' | 'whatsapp' | 'zalo' | 'discord' | 'web';
 
 export type BotSystemKind = 'group_translator' | 'mcp_agent' | 'vietnamese_teacher' | 'tecxmate' | 'claude_assistant';
 

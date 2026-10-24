@@ -208,5 +208,6 @@ them (see `docs/claude-connector.md`):
   `docs/claude-connector.md`. Schema: `docs/connector-schema.sql`.
   Speech-to-text: `docs/transcribe.md`. PM role: `docs/tecxmate-pm.md`.
   Cloudflare Workers port and cutover runbook: `docs/cloudflare.md`.
+  Discord capture: `docs/discord.md`.
 - The tutorial's reference tables are pinned to the code by the smoke suite, so
   a new tool, endpoint, or cron job must be documented in the same change.

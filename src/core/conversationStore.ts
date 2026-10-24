@@ -14,7 +14,7 @@
 
 import { isSqlConfigured, sql, sqlBatch } from './sql.js';
 
-export type ConnectorPlatform = 'line' | 'whatsapp';
+export type ConnectorPlatform = 'line' | 'whatsapp' | 'discord';
 export type ConversationType = 'direct' | 'group' | 'room';
 export type MessageDirection = 'inbound' | 'outbound';
 
