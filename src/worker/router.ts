@@ -12,6 +12,7 @@
 import type { VercelLikeHandler } from './adapter.js';
 
 import cron from '../../api/cron.js';
+import discordIngest from '../../api/discord-ingest.js';
 import deepgramToken from '../../api/deepgram-token.js';
 import exportMemory from '../../api/export.js';
 import facebookWebhook from '../../api/facebook-webhook.js';
@@ -42,6 +43,7 @@ const CRON_ROUTES: Record<string, string> = {
 export const ROUTES: Record<string, Route> = {
   '/api/cron': { endpoint: 'cron', handler: cron as VercelLikeHandler },
   '/api/deepgram-token': { endpoint: 'deepgram-token', handler: deepgramToken as VercelLikeHandler },
+  '/api/discord-ingest': { endpoint: 'discord-ingest', handler: discordIngest as VercelLikeHandler },
   '/api/export': { endpoint: 'export', handler: exportMemory as VercelLikeHandler },
   '/api/facebook-webhook': { endpoint: 'facebook-webhook', handler: facebookWebhook as VercelLikeHandler },
   // Meta delivers WhatsApp on the same webhook shape as Messenger; this alias

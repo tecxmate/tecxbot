@@ -244,6 +244,7 @@ Common ones, in the order they actually bite:
 | `/api/deepgram-token` | mints the short-lived key the browser upload page uses |
 | `/api/line-webhook` | LINE capture (and the bot runtimes) |
 | `/api/facebook-webhook` | Messenger **and** WhatsApp; routed by the payload |
+| `/api/discord-ingest` | Discord capture, fed by the gateway listener (§7) |
 | `/api/telegram-webhook` | Telegram bot intake |
 | `/api/telegram-deliver` | posts a finished transcript back to a Telegram chat |
 | `/api/tecxmate-push` | secret-gated push into the client group, for the local coding agent |

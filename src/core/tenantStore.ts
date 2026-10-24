@@ -18,6 +18,7 @@ type Registry = {
   tenants: Map<string, TenantConfig>;
   lineChannels: Map<string, TenantChannelConfig>;
   whatsappChannels: Map<string, TenantChannelConfig>;
+  discordChannels: Map<string, TenantChannelConfig>;
 };
 
 let cached: Registry | undefined;
@@ -169,6 +170,25 @@ function build(): Registry {
     });
   }
 
+  // Discord — capture-only, like WhatsApp. Discord delivers messages over a
+  // Gateway WebSocket rather than a webhook, so the listener runs outside this
+  // deployment (scripts/discord-gateway.mjs) and POSTs to /api/discord-ingest.
+  // Registered only when the ingest secret is set, because that secret is what
+  // makes the endpoint accept anything at all.
+  const discordChannels = new Map<string, TenantChannelConfig>();
+  const discordTenantId = process.env.DISCORD_TENANT_ID || defaultTenantId;
+  const discordChannelId = process.env.DISCORD_CHANNEL_ID || 'default-discord';
+
+  if (process.env.DISCORD_INGEST_SECRET) {
+    discordChannels.set(discordChannelId, {
+      id: discordChannelId,
+      tenantId: discordTenantId,
+      platform: 'discord',
+      label: 'Discord channel',
+      botSystem: { kind: 'group_translator' },
+    });
+  }
+
   // Claude assistant bot — "Claude in LINE". A channel answers with the captured
   // client conversation as context. Registered only when its access token is set,
   // so nothing else changes when these env vars are absent.
@@ -206,7 +226,7 @@ function build(): Registry {
     });
   }
 
-  return { defaultTenantId, defaultLineChannelId, tenants, lineChannels, whatsappChannels };
+  return { defaultTenantId, defaultLineChannelId, tenants, lineChannels, whatsappChannels, discordChannels };
 }
 
 export function getTenantConfig(tenantId?: string): TenantConfig {
@@ -240,14 +260,26 @@ export function resolveWhatsappChannel(input: { channelId?: string; phoneNumberI
   return { tenant: getTenantConfig(channel.tenantId), channel };
 }
 
+/**
+ * The Discord channel this deployment captures into, if one is configured.
+ * Unlike WhatsApp there is nothing in the payload to route on — a deployment
+ * watches one Discord identity — so this takes no arguments.
+ */
+export function resolveDiscordChannel() {
+  const { discordChannels } = registry();
+  const channel = [...discordChannels.values()][0];
+  if (!channel) return undefined;
+  return { tenant: getTenantConfig(channel.tenantId), channel };
+}
+
 export function listWhatsappChannels() {
   return [...registry().whatsappChannels.values()];
 }
 
 /** Channel inventory reported by the connector's `connector_status` tool. */
 export function listConnectorChannels() {
-  const { lineChannels, whatsappChannels } = registry();
-  return [...lineChannels.values(), ...whatsappChannels.values()].map((channel) => ({
+  const { lineChannels, whatsappChannels, discordChannels } = registry();
+  return [...lineChannels.values(), ...whatsappChannels.values(), ...discordChannels.values()].map((channel) => ({
     id: channel.id,
     platform: channel.platform,
     label: channel.label,
